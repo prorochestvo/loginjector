@@ -105,7 +105,7 @@ before starting non-trivial work. Project delta:
 
 - **Gate:** `gofmt -l .` clean, then `go vet ./...` and `CGO_ENABLED=1 go test -race ./...` green
   — the race detector needs cgo on this arm64 host.
-- **Lenses:** standard three.
+- **Lenses:** standard set — see `pipeline:working-agreement`, which includes lens O.
 - **Branching:** standard (`type/<issue>-<slug>`, PR into `main`); long-running feature branches
   squash-merge, which the Release & CHANGELOG workflow below depends on.
 
