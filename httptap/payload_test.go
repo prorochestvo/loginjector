@@ -181,8 +181,6 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 		})
 	})
 
-	// ---- body-cap tests ----
-
 	t.Run("default_captures_full_body", func(t *testing.T) {
 		t.Parallel()
 
@@ -374,8 +372,6 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 		}
 		wg.Wait()
 	})
-
-	// ---- redaction tests ----
 
 	t.Run("default_set_still_redacted", func(t *testing.T) {
 		t.Parallel()
