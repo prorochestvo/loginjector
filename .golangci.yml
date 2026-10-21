@@ -175,6 +175,18 @@ linters:
           - decorder
           - errcheck
           - forcetypeassert
+      # PROJECT: Go 1.22 floor — httptest.NewRequestWithContext arrived in Go 1.23.
+      # Remove when the go directive reaches 1.23 and migrate the call sites.
+      - path: _test\.go
+        linters:
+          - noctx
+        text: 'httptest\.NewRequest must not be called'
+      # PROJECT: Go 1.22 floor — httptest.NewRequest maps http.NoBody to
+      # ContentLength -1 before Go 1.23; nil keeps 0. Remove with the rule above.
+      - path: _test\.go
+        linters:
+          - gocritic
+        text: 'httpNoBody'
       # The ruleguard rules file is DSL, not production Go.
       - path: gorules/
         linters:

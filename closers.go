@@ -50,6 +50,8 @@ func CloseOrLogError(w io.Writer, c io.Closer) {
 // the function body and joins the close error into whatever err holds at that point.
 // A nil errp means the close error has nowhere to be stored; c is still closed and the
 // error is silently discarded. A nil c is a no-op.
+//
+//nolint:gocritic // errp is written through by design; part of the public CloseOrJoin API
 func CloseOrJoin(errp *error, c io.Closer) {
 	if c == nil {
 		return

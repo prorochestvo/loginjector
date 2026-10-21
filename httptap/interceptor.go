@@ -57,12 +57,6 @@ func newInterceptorWithConfig(w http.ResponseWriter, r *http.Request, cfg payloa
 	return wrapped, r, i
 }
 
-// newInterceptor creates a new http interceptor that captures request and
-// response payloads using the default (unlimited) configuration.
-func newInterceptor(w http.ResponseWriter, r *http.Request) (http.ResponseWriter, *http.Request, *interceptor) {
-	return newInterceptorWithConfig(w, r, defaultPayloadConfig())
-}
-
 // interceptor captures the HTTP status code, request body, and response body
 // for logging. It embeds http.ResponseWriter to satisfy the interface; the Write
 // and WriteHeader methods are overridden to intercept the response. Optional
@@ -95,8 +89,8 @@ type interceptor struct {
 // to the logged buffer.
 func (i *interceptor) Write(b []byte) (int, error) {
 	if i.code == 0 {
-		// defense-in-depth: newInterceptor already seeds 200, but guard against
-		// zero in case interceptor is constructed outside newInterceptor in tests.
+		// defense-in-depth: newInterceptorWithConfig already seeds 200, but guard against
+		// zero in case interceptor is constructed in tests.
 		i.code = http.StatusOK
 	}
 

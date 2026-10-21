@@ -32,7 +32,7 @@ func lineTraceFromHelper() string { return LineTrace(2) }
 func BenchmarkLineTrace(b *testing.B) {
 	b.ReportAllocs()
 	var s string
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		s = lineTraceFromHelper()
 	}
 	lineTraceSink = s
@@ -47,7 +47,7 @@ func BenchmarkStackTrace(b *testing.B) {
 		b.Run("depth-"+strconv.Itoa(depth), func(b *testing.B) {
 			b.ReportAllocs()
 			var s string
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				s = stackTraceAtDepth(depth)
 			}
 			lineTraceSink = s

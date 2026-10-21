@@ -38,7 +38,7 @@ type hijackerRW struct {
 // hijacked so the post-handler flush guard in NewPayloadHandlerWithOptions is
 // skipped.
 func (v *hijackerRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	v.hijackMarker.markHijacked()
+	v.markHijacked()
 	return v.hijacker.Hijack()
 }
 
@@ -63,7 +63,7 @@ type flusherHijackerRW struct {
 
 func (v *flusherHijackerRW) Flush() { v.flusher.Flush() }
 func (v *flusherHijackerRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	v.hijackMarker.markHijacked()
+	v.markHijacked()
 	return v.hijacker.Hijack()
 }
 
@@ -89,7 +89,7 @@ type hijackerPusherRW struct {
 }
 
 func (v *hijackerPusherRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	v.hijackMarker.markHijacked()
+	v.markHijacked()
 	return v.hijacker.Hijack()
 }
 func (v *hijackerPusherRW) Push(target string, opts *http.PushOptions) error {
@@ -107,7 +107,7 @@ type allThreeRW struct {
 
 func (v *allThreeRW) Flush() { v.flusher.Flush() }
 func (v *allThreeRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	v.hijackMarker.markHijacked()
+	v.markHijacked()
 	return v.hijacker.Hijack()
 }
 func (v *allThreeRW) Push(target string, opts *http.PushOptions) error {

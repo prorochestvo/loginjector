@@ -17,15 +17,15 @@ const (
 	logLevelInfo    LogLevel = 0x01
 	logLevelWarning LogLevel = 0x02
 	logLevelSevere  LogLevel = 0xF0
-	//logLevelSilence = 0xFF
 )
 
+//nolint:paralleltest // captureStdout redirects the process-global os.Stdout
 func TestNewLogger(t *testing.T) {
 	l := NewLogger(logLevelDebug)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 	require.Equal(t, logLevelDebug, l.minimumLogLevel)
-	require.Equal(t, len(l.hooks), 0, "unexpected hooks count")
-	require.Equal(t, len(l.handlers), 1, "unexpected handlers count")
+	require.Empty(t, l.hooks, "unexpected hooks count")
+	require.Len(t, l.handlers, 1, "unexpected handlers count")
 
 	// the default handler is a TimestampedPrintHandler on stdout: a write at/above
 	// the minimum level must produce a timestamped line on stdout.
@@ -41,8 +41,9 @@ func TestNewLogger(t *testing.T) {
 }
 
 func TestLogger_SetMinLevel(t *testing.T) {
+	t.Parallel()
 	l := NewLogger(logLevelDebug)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 	require.NotEqual(t, logLevelInfo, l.minimumLogLevel)
 
 	l.SetMinLevel(logLevelInfo)
@@ -50,15 +51,17 @@ func TestLogger_SetMinLevel(t *testing.T) {
 }
 
 func TestLogger_Hook(t *testing.T) {
+	t.Parallel()
 	t.Run("exact level routing", func(t *testing.T) {
+		t.Parallel()
 		m := uniqueToken()
 		b := bytes.NewBufferString("")
 		l := NewLogger(logLevelInfo, io.Discard)
-		require.NotEqual(t, nil, l)
-		require.Equal(t, len(l.hooks), 0, "unexpected number of hooks")
+		require.NotNil(t, l)
+		require.Empty(t, l.hooks, "unexpected number of hooks")
 
 		hookID := l.Hook(b, logLevelWarning)
-		require.Equal(t, len(l.hooks), 1, "unexpected number of hooks")
+		require.Len(t, l.hooks, 1, "unexpected number of hooks")
 		require.Equal(t, hookID, l.hooks[0].ID, "unexpected hook[0].id")
 		require.Equal(t, logLevelWarning, l.hooks[0].Level, "unexpected hook[0].Level")
 		n, err := l.WriteLog(logLevelWarning, []byte(m))
@@ -82,6 +85,7 @@ func TestLogger_Hook(t *testing.T) {
 	})
 
 	t.Run("duplicate levels dedupe", func(t *testing.T) {
+		t.Parallel()
 		b := bytes.NewBufferString("")
 		l := NewLogger(logLevelInfo, io.Discard)
 
@@ -97,6 +101,7 @@ func TestLogger_Hook(t *testing.T) {
 	})
 
 	t.Run("distinct levels preserve first-seen order", func(t *testing.T) {
+		t.Parallel()
 		b := bytes.NewBufferString("")
 		l := NewLogger(logLevelInfo, io.Discard)
 
@@ -108,6 +113,7 @@ func TestLogger_Hook(t *testing.T) {
 	})
 
 	t.Run("concurrent hook IDs are unique_ForRaceCondition", func(t *testing.T) {
+		t.Parallel()
 		// the per-logger counter runs under l.m in Hook, so concurrent registrations
 		// must each receive a distinct ID without a data race.
 		const n = 100
@@ -116,7 +122,7 @@ func TestLogger_Hook(t *testing.T) {
 		var mu sync.Mutex
 		ids := make(map[HookID]struct{}, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for range n {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -137,6 +143,7 @@ func TestLogger_Hook(t *testing.T) {
 // WriteLog reports n=0 because the handlers were gated out. This pins the single-sink
 // fast-path's handlersActive=false branch, which no other test exercises functionally.
 func TestLogger_HookBelowMinimum(t *testing.T) {
+	t.Parallel()
 	m := uniqueToken()
 	b := bytes.NewBufferString("")
 	l := NewLogger(logLevelInfo, io.Discard)
@@ -149,29 +156,31 @@ func TestLogger_HookBelowMinimum(t *testing.T) {
 }
 
 func TestLogger_Unhook(t *testing.T) {
+	t.Parallel()
 	m := uniqueToken()
 	b := bytes.NewBufferString("")
 	l := NewLogger(logLevelInfo, io.Discard)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 
 	// Warning, Severe, Severe dedupes to two distinct hook entries sharing one ID.
 	hookID := l.Hook(b, logLevelWarning, logLevelSevere, logLevelSevere)
 	require.Len(t, l.hooks, 2, "unexpected number of hooks")
 
 	l.Unhook(hookID)
-	require.Len(t, l.hooks, 0, "unexpected number of hooks")
+	require.Empty(t, l.hooks, "unexpected number of hooks")
 
 	n, err := l.WriteLog(logLevelWarning, []byte(m))
 	require.NoError(t, err)
 	require.Len(t, m, n, "method returned an unexpected length")
-	require.Equal(t, len(b.String()), 0, "unexpected message")
+	require.Empty(t, b.String(), "unexpected message")
 }
 
 func TestLogger_WriteLog(t *testing.T) {
+	t.Parallel()
 	m := uniqueToken()
 	b := bytes.NewBufferString("")
 	l := NewLogger(logLevelInfo, b)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 
 	n, err := l.WriteLog(logLevelSevere, []byte(m))
 	require.NoError(t, err)
@@ -184,7 +193,7 @@ func TestLogger_WriteLog(t *testing.T) {
 	n, err = l.WriteLog(logLevelDebug, []byte(m))
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
-	require.Len(t, b.String(), 0)
+	require.Empty(t, b.String())
 
 	b.Reset()
 	m = uniqueToken()
@@ -195,12 +204,15 @@ func TestLogger_WriteLog(t *testing.T) {
 	require.Equal(t, m, b.String())
 }
 
+//nolint:paralleltest // calls log.SetOutput on the std logger
 func TestLogger_Write(t *testing.T) {
 	m := uniqueToken()
 	b := bytes.NewBufferString("")
 	l := NewLogger(logLevelInfo, b)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 
+	prev := log.Writer()
+	t.Cleanup(func() { log.SetOutput(prev) })
 	log.SetOutput(l)
 
 	n, err := l.Write([]byte(m))
@@ -224,6 +236,7 @@ func TestLogger_Write(t *testing.T) {
 }
 
 func TestLogger_PrintAndPanic(t *testing.T) {
+	t.Parallel()
 	m1 := "M1_" + uniqueToken()
 	m2 := "M2_" + uniqueToken()
 	m3 := "M3_" + uniqueToken()
@@ -233,7 +246,7 @@ func TestLogger_PrintAndPanic(t *testing.T) {
 	m7 := "M7_" + uniqueToken()
 	b := bytes.NewBufferString("")
 	l := NewLogger(logLevelInfo, b)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
@@ -279,7 +292,7 @@ func TestLogger_PrintAndPanic(t *testing.T) {
 	}(&wg, l, m7)
 	wg.Wait()
 
-	require.NotEqual(t, 0, len(b.String()))
+	require.NotEmpty(t, b.String())
 	require.NotContains(t, b.String(), m1)
 	require.Contains(t, b.String(), m2)
 	require.Contains(t, b.String(), m3)
@@ -297,7 +310,7 @@ func BenchmarkWriteLog(b *testing.B) {
 	b.Run("0 sinks (below minimum, no hooks)", func(b *testing.B) {
 		l := NewLogger(logLevelInfo, io.Discard)
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = l.WriteLog(logLevelDebug, msg)
 		}
 	})
@@ -305,7 +318,7 @@ func BenchmarkWriteLog(b *testing.B) {
 	b.Run("1 sink (single handler)", func(b *testing.B) {
 		l := NewLogger(logLevelInfo, io.Discard)
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = l.WriteLog(logLevelInfo, msg)
 		}
 	})
@@ -314,7 +327,7 @@ func BenchmarkWriteLog(b *testing.B) {
 		l := NewLogger(logLevelInfo, io.Discard)
 		l.Hook(io.Discard, logLevelDebug)
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = l.WriteLog(logLevelDebug, msg)
 		}
 	})
@@ -322,7 +335,7 @@ func BenchmarkWriteLog(b *testing.B) {
 	b.Run("4 sinks (concurrent fan-out)", func(b *testing.B) {
 		l := NewLogger(logLevelInfo, io.Discard, io.Discard, io.Discard, io.Discard)
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = l.WriteLog(logLevelInfo, msg)
 		}
 	})
@@ -332,7 +345,7 @@ func BenchmarkWriteLog(b *testing.B) {
 		l.Hook(io.Discard, logLevelDebug)
 		l.Hook(io.Discard, logLevelDebug)
 		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
+		for range b.N {
 			_, _ = l.WriteLog(logLevelDebug, msg)
 		}
 	})
@@ -439,7 +452,7 @@ func TestWithMinLevel_Logger(t *testing.T) {
 		l := NewLogger(3, fileBuf, WithMinLevel(1, consoleBuf))
 
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -503,9 +516,10 @@ func TestLogger_StdLog(t *testing.T) {
 }
 
 func TestLogger_WriterAs(t *testing.T) {
+	t.Parallel()
 	b := bytes.NewBufferString("")
 	l := NewLogger(logLevelInfo, b)
-	require.NotEqual(t, nil, l)
+	require.NotNil(t, l)
 
 	w := l.WriterAs(logLevelWarning)
 	m := uniqueToken()

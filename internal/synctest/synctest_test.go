@@ -89,11 +89,11 @@ func TestSafeBuffer(t *testing.T) {
 
 		var sb SafeBuffer
 		var wg sync.WaitGroup
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := 0; j < writesPerGoroutine; j++ {
+				for range writesPerGoroutine {
 					_, err := sb.Write(payload)
 					if err != nil {
 						// signal failure without calling t.Fatal from a goroutine
@@ -105,7 +105,7 @@ func TestSafeBuffer(t *testing.T) {
 		wg.Wait()
 
 		total := goroutines * writesPerGoroutine * len(payload)
-		require.Equal(t, total, len(sb.Bytes()),
+		require.Len(t, sb.Bytes(), total,
 			"total bytes written must equal goroutines × writes × payload length")
 	})
 
@@ -121,11 +121,11 @@ func TestSafeBuffer(t *testing.T) {
 		var sb SafeBuffer
 		var wg sync.WaitGroup
 
-		for i := 0; i < writers; i++ {
+		for range writers {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := 0; j < writesPerGoroutine; j++ {
+				for range writesPerGoroutine {
 					if _, err := sb.Write(payload); err != nil {
 						panic(err)
 					}
@@ -133,11 +133,11 @@ func TestSafeBuffer(t *testing.T) {
 			}()
 		}
 
-		for i := 0; i < readers; i++ {
+		for range readers {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for j := 0; j < readsPerGoroutine; j++ {
+				for range readsPerGoroutine {
 					// both Bytes() and String() exercise the read-side lock path.
 					_ = sb.Bytes()
 					_ = sb.String()
@@ -148,7 +148,7 @@ func TestSafeBuffer(t *testing.T) {
 		wg.Wait()
 		// Bytes() and String() do not consume data, so all written bytes must be present.
 		total := writers * writesPerGoroutine * len(payload)
-		require.Equal(t, total, len(sb.Bytes()),
+		require.Len(t, sb.Bytes(), total,
 			"all written bytes must be present after concurrent reads")
 	})
 }
