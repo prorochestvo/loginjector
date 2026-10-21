@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## What this is
 
 `github.com/prorochestvo/loginjector` is a small, dependency-light Go **logging library** (not a service): a `Logger` fans a message out to a set of `io.Writer` handlers, plus ready-made handlers (console, file rotation, Telegram), level-targeted hooks, and orthogonal helpers (JSON, `io.Closer` wrappers, stack-trace / HTTP error types). Opt-in HTTP traffic tapping lives in `httptap/`. Consumers `go get` and embed it — no binary, no database, no HTTP server of its own.
@@ -83,9 +81,9 @@ The `interceptor` doesn't implement `http.Flusher`/`Hijacker`/`Pusher` directly;
 
 ## Conventions
 
-Generic Go conventions (style, file declaration order, test structure, test-only
-code placement, godoc, error discipline, code organization) come from the
-`stack-go` plugin skills — they are not restated here. Project-specific constraints:
+Generic Go conventions (style, declaration order, test structure, godoc, error discipline,
+build hygiene, organisation) come from the `stack-go` plugin skills and are not restated
+anywhere in this repo. Project-specific constraints:
 
 - **No CGO**: keep the package cgo-free (`CGO_ENABLED=0` builds clean); the `-race`
   gate is the exception — it needs cgo (see Build & Test). The only direct deps are
@@ -107,7 +105,8 @@ before starting non-trivial work. Project delta:
 
 - **Gate:** `gofmt -l .` clean, then `go vet ./...` and `CGO_ENABLED=1 go test -race ./...`
 - **Review focus:** standard staged set — see `pipeline:working-agreement`.
-- **Branching:** `type/<issue>-<slug>`, PR into `main`.
+- **Branching:** `type/<issue>-<slug>`, PR into `main`; long-running feature branches
+  squash-merge, which the Release & CHANGELOG workflow below depends on.
 
 ## Release & CHANGELOG workflow
 
