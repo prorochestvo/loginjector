@@ -329,7 +329,7 @@ func TestWrapInterceptor(t *testing.T) {
 	t.Run("statusLogWriter_models_1xx_semantics", func(t *testing.T) {
 		t.Parallel()
 
-		// statusLogWriter is used in Task 6 tests to record every WriteHeader call,
+		// statusLogWriter records every WriteHeader call,
 		// modeling net/http's 1xx informational handling.
 		slw := newStatusLogWriter()
 		slw.WriteHeader(http.StatusContinue)

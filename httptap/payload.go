@@ -129,6 +129,8 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 // response payloads (request line, headers, bodies, response status) to the
 // given logger at the specified level. The Authorization, Proxy-Authorization,
 // Cookie, Set-Cookie, X-Api-Key, and X-Auth-Token headers are always redacted.
+// Query parameters access_token, refresh_token, id_token, client_secret, api_key,
+// apikey, and password are logged with values redacted as [REDACTED].
 // This function is equivalent to calling NewPayloadHandlerWithOptions with no
 // options.
 //

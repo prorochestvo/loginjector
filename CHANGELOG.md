@@ -49,6 +49,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `NewRecoverHandler` did not freeze headers at `WriteHeader`.
 - `NewAccessHandler` and `NewPayloadHandlerWithOptions` treated 1xx informational responses
   as final status.
+- `NewRecoverHandler` sent a declared trailer (`Trailer: X-Checksum`, value set after `Write`)
+  as a response header as well as a trailer; it now goes out only as a trailer.
 - `RotatingFileHandler` without options pruned every `*.log` file in its folder, whatever
   its name, when the file count exceeded `WithMaxFiles` — deleting log files of other
   components and the live file of another handler sharing the folder (including

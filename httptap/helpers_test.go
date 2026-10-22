@@ -196,8 +196,7 @@ func (l *lockedWriter) Write(b []byte) (int, error) {
 
 // statusLogWriter is a fake http.ResponseWriter + http.Flusher that records
 // every WriteHeader call (including 1xx informational), modeling net/http's
-// 1xx semantics (informational codes do not commit a final status). For testing
-// Task 5 (beforeFlush hook and committed status) and Task 6 (header snapshots).
+// 1xx semantics (informational codes do not commit a final status).
 type statusLogWriter struct {
 	*httptest.ResponseRecorder
 	statusCodes     []int

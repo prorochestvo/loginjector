@@ -81,6 +81,7 @@ func isControlByte(b byte) bool {
 }
 
 // isControlRune returns true for control runes: U+0085, U+2028, U+2029.
+// When encoded, each rune is percent-encoded with one %XX per UTF-8 byte.
 func isControlRune(r rune) bool {
 	return r == 0x0085 || r == 0x2028 || r == 0x2029
 }

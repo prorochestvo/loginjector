@@ -73,10 +73,52 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 		return raw
 	}
 
-	var result strings.Builder
-	matched := false
+	// First pass: check if any parameters need redaction to avoid allocating
+	// when there's no match.
+	hasMatch := false
 	i := 0
+	for i < len(raw) {
+		// Find the next delimiter (&, ;)
+		nextDelim := len(raw)
+		for j := i; j < len(raw); j++ {
+			if raw[j] == '&' || raw[j] == ';' {
+				nextDelim = j
+				break
+			}
+		}
 
+		segment := raw[i:nextDelim]
+		eqIdx := strings.Index(segment, "=")
+		if eqIdx >= 0 {
+			name := segment[:eqIdx]
+			// Percent-decode the name for matching
+			decodedName, err := url.QueryUnescape(name)
+			if err != nil {
+				decodedName = name
+			}
+			// Check if this parameter should be redacted (case-insensitive)
+			if _, redact := names[strings.ToLower(decodedName)]; redact {
+				hasMatch = true
+				break
+			}
+		}
+
+		// Move to the next segment
+		if nextDelim < len(raw) {
+			i = nextDelim + 1
+		} else {
+			i = nextDelim
+		}
+	}
+
+	// If no match, return the raw query unchanged.
+	if !hasMatch {
+		return raw
+	}
+
+	// Second pass: build the result with redactions.
+	var result strings.Builder
+	i = 0
 	for i < len(raw) {
 		// Find the next delimiter (&, ;)
 		nextDelim := len(raw)
@@ -106,7 +148,6 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 				// Write the raw name and the redaction marker
 				result.WriteString(name)
 				result.WriteString("=[REDACTED]")
-				matched = true
 			} else {
 				// Keep the segment as-is
 				result.WriteString(segment)
@@ -122,8 +163,5 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 		}
 	}
 
-	if !matched {
-		return raw
-	}
 	return result.String()
 }

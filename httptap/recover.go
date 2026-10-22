@@ -225,15 +225,6 @@ func (rrw *recoverResponseWriter) WriteHeader(code int) {
 	}
 }
 
-// replaceHeader clears dst and copies all headers from src to dst.
-func replaceHeader(dst, src http.Header) {
-	clear(dst)
-	for k, v := range src {
-		// make a copy of the slice so the caller's mutations don't affect us.
-		dst[k] = append([]string(nil), v...)
-	}
-}
-
 // copyTrailers copies trailer headers from the live buffered map to the real map.
 // Trailer keys are those declared in snapshot["Trailer"] (comma-separated, trimmed,
 // canonicalised) and those with http.TrailerPrefix in the live buffered headers.
@@ -346,6 +337,15 @@ func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
 	// copy trailers that were set after the body write.
 	copyTrailers(w.Header(), rrw.headers, rrw.snapshot)
 	return err
+}
+
+// replaceHeader clears dst and copies all headers from src to dst.
+func replaceHeader(dst, src http.Header) {
+	clear(dst)
+	for k, v := range src {
+		// make a copy of the slice so the caller's mutations don't affect us.
+		dst[k] = append([]string(nil), v...)
+	}
 }
 
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
