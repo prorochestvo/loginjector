@@ -143,9 +143,14 @@ type RecoverOption func(*recoverConfig)
 // WriteHeader can still be replaced with a 500 response. Nothing is forwarded
 // to the underlying http.ResponseWriter until flushTo is called on the clean
 // path, or until the recover middleware writes the 500 directly on the panic path.
+//
+// The snapshot field holds a clone of the buffered headers at the moment a final
+// status is committed, capturing header deletions and preserving the exact headers
+// that were in effect when WriteHeader was called.
 type recoverResponseWriter struct {
 	http.ResponseWriter
 	headers     http.Header
+	snapshot    http.Header
 	body        bytes.Buffer
 	statusCode  int
 	wroteHeader bool
@@ -161,14 +166,42 @@ func (rrw *recoverResponseWriter) Header() http.Header {
 	return rrw.headers
 }
 
-// WriteHeader records the status code in the buffer. First call wins; subsequent
-// calls are no-ops, matching the stdlib http.ResponseWriter contract.
+// WriteHeader records the status code in the buffer. Informational responses
+// (100-199 except 101) are forwarded immediately without recording. The first
+// final status is recorded and a snapshot of the buffered headers is taken.
+// Subsequent calls are no-ops, matching the stdlib http.ResponseWriter contract.
 func (rrw *recoverResponseWriter) WriteHeader(code int) {
+	if isInformational(code) {
+		// forward 1xx immediately: save the real header map, apply buffered headers,
+		// call WriteHeader, then restore.
+		orig := rrw.ResponseWriter.Header().Clone()
+		if rrw.headers != nil {
+			replaceHeader(rrw.ResponseWriter.Header(), rrw.headers)
+		}
+		rrw.ResponseWriter.WriteHeader(code)
+		replaceHeader(rrw.ResponseWriter.Header(), orig)
+		return
+	}
 	if rrw.wroteHeader {
 		return
 	}
 	rrw.statusCode = code
 	rrw.wroteHeader = true
+	// snapshot the buffered headers at the moment the final status is committed.
+	if rrw.headers != nil {
+		rrw.snapshot = rrw.headers.Clone()
+	} else {
+		rrw.snapshot = make(http.Header)
+	}
+}
+
+// replaceHeader clears dst and copies all headers from src to dst.
+func replaceHeader(dst, src http.Header) {
+	clear(dst)
+	for k, v := range src {
+		// make a copy of the slice so the caller's mutations don't affect us.
+		dst[k] = append([]string(nil), v...)
+	}
 }
 
 // Write appends b to the in-memory body buffer. Implicitly calls WriteHeader(200)
@@ -196,15 +229,19 @@ func (rrw *recoverResponseWriter) beforeFlush() {
 // triggers the first header flush, faithfully reproducing the handler's
 // observable behaviour.
 func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
-	if rrw.headers != nil {
+	if rrw.wroteHeader && rrw.snapshot != nil {
+		// final status was recorded: use the snapshot (which includes deletions).
+		replaceHeader(w.Header(), rrw.snapshot)
+		w.WriteHeader(rrw.statusCode)
+	} else if rrw.headers != nil {
+		// no final status was recorded: apply buffered headers as-is.
 		dst := w.Header()
 		for k, v := range rrw.headers {
-			dst[k] = v
+			// make a copy of the slice so the caller's mutations don't affect us.
+			dst[k] = append([]string(nil), v...)
 		}
 	}
-	if rrw.wroteHeader {
-		w.WriteHeader(rrw.statusCode)
-	}
+	// write the buffered body.
 	_, err := w.Write(rrw.body.Bytes())
 	return err
 }

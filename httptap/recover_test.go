@@ -392,6 +392,42 @@ func TestNewRecoverHandler(t *testing.T) {
 		assert.NotContains(t, logBuf.String(), `"a"`)
 	})
 
+	t.Run("clean_path_applies_header_deletion", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Del("X-Outer")
+			_, _ = w.Write([]byte("body"))
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		rec := httptest.NewRecorder()
+		rec.Header().Set("X-Outer", "1")
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Empty(t, rec.Result().Header.Get("X-Outer"), "deleted header must not be present")
+	})
+
+	t.Run("clean_path_headers_frozen_at_writeheader", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Header().Set("X-Late", "1")
+			_, _ = w.Write([]byte("body"))
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Empty(t, rec.Result().Header.Get("X-Late"), "headers set after WriteHeader must not be included")
+	})
+
 	t.Run("concurrent_panics_ForRaceCondition", func(t *testing.T) {
 		t.Parallel()
 		const total = 100

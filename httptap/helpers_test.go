@@ -197,24 +197,42 @@ func (l *lockedWriter) Write(b []byte) (int, error) {
 // statusLogWriter is a fake http.ResponseWriter + http.Flusher that records
 // every WriteHeader call (including 1xx informational), modeling net/http's
 // 1xx semantics (informational codes do not commit a final status). For testing
-// Task 5 (beforeFlush hook and committed status).
+// Task 5 (beforeFlush hook and committed status) and Task 6 (header snapshots).
 type statusLogWriter struct {
 	*httptest.ResponseRecorder
-	statusCodes []int
-	flushed     bool
+	statusCodes     []int
+	headerSnapshots []http.Header
+	finalStatus     int
+	finalHeaders    http.Header
+	body            []byte
+	flushed         bool
 }
 
 func newStatusLogWriter() *statusLogWriter {
 	return &statusLogWriter{
 		ResponseRecorder: httptest.NewRecorder(),
 		statusCodes:      make([]int, 0),
+		headerSnapshots:  make([]http.Header, 0),
 	}
 }
 
 func (s *statusLogWriter) WriteHeader(code int) {
 	s.statusCodes = append(s.statusCodes, code)
+	// Record a header snapshot at each WriteHeader call.
+	headerSnapshot := s.Header().Clone()
+	s.headerSnapshots = append(s.headerSnapshots, headerSnapshot)
+	// Track the final status (the last non-1xx code).
+	if code < 100 || code > 199 || code == 101 {
+		s.finalStatus = code
+		s.finalHeaders = headerSnapshot
+	}
 	// Don't call the recorder's WriteHeader; it treats all codes as final.
 	// Instead, just record the code.
+}
+
+func (s *statusLogWriter) Write(b []byte) (int, error) {
+	s.body = append(s.body, b...)
+	return s.ResponseRecorder.Write(b)
 }
 
 func (s *statusLogWriter) Flush() {
