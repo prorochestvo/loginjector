@@ -1,39 +1,51 @@
 SHELL := /bin/bash
 
-GOLANGCI_VERSION := v2.12.2
-# Revision the adoption gate compares against: only code newer than this is
-# required to be clean while the standing findings are worked off.
-LINT_BASE ?= origin/main
+GOLANGCI_VERSION ?= v2.15.0
 
-.PHONY: test lint lint-new format tidy
+.PHONY: verify fmt-check tidy-check vet build lint lint-selftest lint-install test format tidy
 
-## test: vet and run the suite with the race detector
-test: format
+## verify: every check; the project gate and the CI entry point
+verify: fmt-check tidy-check vet build lint lint-selftest test
+
+## fmt-check: fail and print unformatted Go files
+fmt-check:
+	@files="$$(gofmt -l .)"; if [[ -n "$$files" ]]; then printf '%s\n' "$$files" >&2; exit 1; fi
+
+## tidy-check: verify go.mod and go.sum are tidy
+tidy-check:
+	go mod tidy -diff
+
+## vet: vet the packages without cgo
+vet:
 	CGO_ENABLED=0 go vet ./...
-	CGO_ENABLED=0 go test -race ./...
 
-## lint: golangci-lint over the whole tree, then the text-level review checks
+## build: prove the packages build without cgo
+build:
+	CGO_ENABLED=0 go build ./...
+
+## lint: run golangci-lint and the text-level review checks
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		echo "golangci-lint not found — install $(GOLANGCI_VERSION): https://golangci-lint.run/docs/welcome/install/local/"; \
-		exit 1; \
-	}
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not found — install with make lint-install" >&2; exit 1; }
+	@actual="$$(golangci-lint version --short)"; expected="$(patsubst v%,%,$(GOLANGCI_VERSION))"; if [[ "$$actual" != "$$expected" ]]; then echo "golangci-lint version mismatch: expected $(GOLANGCI_VERSION), found $$actual" >&2; if [[ -n "$$CI" ]]; then exit 1; fi; fi
 	CGO_ENABLED=0 golangci-lint run ./...
-	@scripts/lint-checks.sh
+	bash scripts/lint-checks.sh
 
-## lint-new: lint only code changed since $(LINT_BASE); this is the mergeable gate
-lint-new:
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		echo "golangci-lint not found — install $(GOLANGCI_VERSION): https://golangci-lint.run/docs/welcome/install/local/"; \
-		exit 1; \
-	}
-	CGO_ENABLED=0 golangci-lint run --new-from-rev=$(LINT_BASE) ./...
-	@scripts/lint-checks.sh
+## lint-selftest: run the lint-check script self-tests
+lint-selftest:
+	bash scripts/lint-checks-selftest.sh
 
-## format: gofmt the tree
+## lint-install: install the pinned golangci-lint version
+lint-install:
+	curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" $(GOLANGCI_VERSION)
+
+## test: the suite under the race detector (race needs cgo on Linux)
+test:
+	CGO_ENABLED=1 go test -race ./...
+
+## format: format the Go source files
 format:
-	go fmt ./...
+	gofmt -w .
 
-## tidy: prune and verify the module graph
+## tidy: update the Go module files
 tidy:
 	go mod tidy
