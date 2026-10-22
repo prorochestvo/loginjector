@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -44,7 +43,7 @@ func defaultPayloadConfig() payloadConfig {
 	}
 	q := make(map[string]struct{}, len(defaultRedactQueryParams))
 	for name := range defaultRedactQueryParams {
-		q[strings.ToLower(name)] = struct{}{}
+		q[redactKey(name)] = struct{}{}
 	}
 	return payloadConfig{
 		maxRequestBody:    defaultMaxBody,
@@ -109,7 +108,7 @@ func WithRedactHeaders(names ...string) PayloadOption {
 func WithRedactQueryParams(names ...string) PayloadOption {
 	return func(c *payloadConfig) {
 		for _, n := range names {
-			c.redactQueryParams[strings.ToLower(strings.TrimSpace(n))] = struct{}{}
+			c.redactQueryParams[redactKey(n)] = struct{}{}
 		}
 	}
 }

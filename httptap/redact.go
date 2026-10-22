@@ -97,7 +97,7 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 				decodedName = name
 			}
 			// Check if this parameter should be redacted (case-insensitive)
-			if _, redact := names[strings.ToLower(decodedName)]; redact {
+			if _, redact := names[redactKey(decodedName)]; redact {
 				hasMatch = true
 				break
 			}
@@ -144,7 +144,7 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 				decodedName = name
 			}
 			// Check if this parameter should be redacted (case-insensitive)
-			if _, redact := names[strings.ToLower(decodedName)]; redact {
+			if _, redact := names[redactKey(decodedName)]; redact {
 				// Write the raw name and the redaction marker
 				result.WriteString(name)
 				result.WriteString("=[REDACTED]")

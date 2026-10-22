@@ -256,6 +256,56 @@ func TestNewRecoverHandler(t *testing.T) {
 		require.Contains(t, logBuf.String(), "flush then panic", "panic message must be logged")
 	})
 
+	t.Run("flush_without_header_call_records_implicit_200", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		sw := newStatusLogWriter()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.(http.Flusher).Flush()
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(sw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, []int{http.StatusInternalServerError}, sw.statusCodes,
+			"a WriteHeader after the implicit-200 commit must reach the real writer as a superfluous call")
+	})
+
+	t.Run("flush_first_applies_header_deletion", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		fw := &fakeFlusherWriter{ResponseRecorder: httptest.NewRecorder(), onFlush: func() {}}
+		fw.Header().Set("X-Outer", "1")
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Del("X-Outer")
+			w.(http.Flusher).Flush()
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Empty(t, fw.Header().Get("X-Outer"), "a header deleted before the first Flush must not be sent")
+	})
+
+	t.Run("clean_path_without_write_applies_header_deletion", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		rec := httptest.NewRecorder()
+		rec.Header().Set("X-Outer", "1")
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Del("X-Outer")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Empty(t, rec.Header().Get("X-Outer"), "a header deleted by a handler that never writes must not be sent")
+	})
+
 	t.Run("flush_commits_buffered_status", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)

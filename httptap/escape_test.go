@@ -9,6 +9,13 @@ import (
 func TestEscapeControl(t *testing.T) {
 	t.Parallel()
 
+	t.Run("c1_rune_escaped", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "a%C2%9Bb", escapeControl("a\u009bb"), "U+009B CSI must be percent-encoded")
+		assert.Equal(t, "a%C2%80b", escapeControl("a\u0080b"), "U+0080 must be percent-encoded")
+		assert.Equal(t, "a\u00a0b", escapeControl("a\u00a0b"), "U+00A0 is not a control and stays as-is")
+	})
+
 	t.Run("plain_ascii_unchanged", func(t *testing.T) {
 		t.Parallel()
 		input := "hello-world"

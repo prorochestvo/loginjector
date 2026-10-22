@@ -195,14 +195,7 @@ func (rrw *recoverResponseWriter) Header() http.Header {
 // the superfluous call). Before commit, they are silent no-ops.
 func (rrw *recoverResponseWriter) WriteHeader(code int) {
 	if isInformational(code) {
-		// forward 1xx immediately: save the real header map, apply buffered headers,
-		// call WriteHeader, then restore.
-		orig := rrw.ResponseWriter.Header().Clone()
-		if rrw.headers != nil {
-			replaceHeader(rrw.ResponseWriter.Header(), rrw.headers)
-		}
-		rrw.ResponseWriter.WriteHeader(code)
-		replaceHeader(rrw.ResponseWriter.Header(), orig)
+		rrw.writeInformational(code)
 		return
 	}
 	if rrw.wroteHeader {
@@ -287,18 +280,14 @@ func (rrw *recoverResponseWriter) beforeFlush() {
 			replaceHeader(rrw.ResponseWriter.Header(), rrw.snapshot)
 		}
 		rrw.ResponseWriter.WriteHeader(rrw.statusCode)
-	} else if rrw.headers != nil {
-		// no final status was recorded: apply buffered headers.
-		// The real writer will send an implicit 200 when the body write happens.
-		dst := rrw.ResponseWriter.Header()
-		for k, v := range rrw.headers {
-			// make a copy of the slice so mutations don't affect us.
-			dst[k] = append([]string(nil), v...)
-		}
-		// record the implicit 200 as if it were committed.
+	} else {
+		// no final status was recorded: the real writer sends an implicit 200 when
+		// the body write happens, so record that 200 and freeze the headers now.
+		h := rrw.Header()
+		replaceHeader(rrw.ResponseWriter.Header(), h)
 		rrw.statusCode = http.StatusOK
 		rrw.wroteHeader = true
-		rrw.snapshot = rrw.headers.Clone()
+		rrw.snapshot = h.Clone()
 	}
 	// write the buffered body to the real writer.
 	_, _ = rrw.ResponseWriter.Write(rrw.body.Bytes())
@@ -325,18 +314,26 @@ func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
 		replaceHeader(w.Header(), rrw.snapshot)
 		w.WriteHeader(rrw.statusCode)
 	} else if rrw.headers != nil {
-		// no final status was recorded: apply buffered headers as-is.
-		dst := w.Header()
-		for k, v := range rrw.headers {
-			// make a copy of the slice so the caller's mutations don't affect us.
-			dst[k] = append([]string(nil), v...)
-		}
+		// no final status was recorded: the buffered map, deletions included, is the
+		// header set the handler saw.
+		replaceHeader(w.Header(), rrw.headers)
 	}
 	// write the buffered body.
 	_, err := w.Write(rrw.body.Bytes())
 	// copy trailers that were set after the body write.
 	copyTrailers(w.Header(), rrw.headers, rrw.snapshot)
 	return err
+}
+
+// writeInformational forwards a 1xx response immediately with the handler's
+// buffered headers, restoring the real header map afterwards even if the real
+// WriteHeader panics.
+func (rrw *recoverResponseWriter) writeInformational(code int) {
+	realHeader := rrw.ResponseWriter.Header()
+	orig := realHeader.Clone()
+	defer replaceHeader(realHeader, orig)
+	replaceHeader(realHeader, rrw.Header())
+	rrw.ResponseWriter.WriteHeader(code)
 }
 
 // replaceHeader clears dst and copies all headers from src to dst.
