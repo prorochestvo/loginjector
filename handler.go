@@ -1119,9 +1119,20 @@ type leveledWriter struct {
 }
 
 func (lw *leveledWriter) Write(p []byte) (int, error) { return lw.inner.Write(p) }
-func (lw *leveledWriter) MinLevel() LogLevel          { return lw.level }
+
+// WriteLevel forwards p with its level to the inner writer when it is a
+// LevelWriter, and to its Write otherwise.
+func (lw *leveledWriter) WriteLevel(level LogLevel, p []byte) (int, error) {
+	if inner, ok := lw.inner.(LevelWriter); ok {
+		return inner.WriteLevel(level, p)
+	}
+	return lw.inner.Write(p)
+}
+
+func (lw *leveledWriter) MinLevel() LogLevel { return lw.level }
 
 var _ LeveledHandler = (*leveledWriter)(nil)
+var _ LevelWriter = (*leveledWriter)(nil)
 
 // writer is a thread-safe writer.
 type writer struct {
@@ -1133,14 +1144,32 @@ type writer struct {
 
 // Write writes the message to the handler.
 func (w *writer) Write(p []byte) (n int, err error) {
-	mu := &w.m
-	if w.shared != nil {
-		mu = w.shared
-	}
+	mu := w.mutex()
 	mu.Lock()
 	defer mu.Unlock()
 	return w.h(p)
 }
+
+// WriteLevel writes p to the handler with the given level while holding its sink mutex.
+func (w *writer) WriteLevel(level LogLevel, p []byte) (n int, err error) {
+	mu := w.mutex()
+	mu.Lock()
+	defer mu.Unlock()
+	if original, ok := w.original.(LevelWriter); ok {
+		return original.WriteLevel(level, p)
+	}
+	return w.h(p)
+}
+
+// mutex returns the shared per-sink mutex when one is set, else the writer's own.
+func (w *writer) mutex() *sync.Mutex {
+	if w.shared != nil {
+		return w.shared
+	}
+	return &w.m
+}
+
+var _ LevelWriter = (*writer)(nil)
 
 // listRotation lists non-directory entries whose names end with one of suffixes. It
 // reads the directory directly so metacharacters in folder names are treated literally.

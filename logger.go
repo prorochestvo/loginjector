@@ -26,6 +26,17 @@ type LeveledHandler interface {
 	MinLevel() LogLevel
 }
 
+// LevelWriter is an optional interface a handler or hook may implement to receive
+// the severity of each message. Implementations must not retain p after returning.
+// When a sink implements LevelWriter, Logger.WriteLog calls WriteLevel instead of
+// Write. Package handlers that wrap a user writer through a closure, such as
+// TimestampedHandler(ax), do not forward the level. An existing user type that
+// already has a WriteLevel(LogLevel, []byte) method now receives calls through it.
+type LevelWriter interface {
+	io.Writer
+	WriteLevel(level LogLevel, p []byte) (n int, err error)
+}
+
 // Logger is describing the logger structure and its methods.
 //
 // Re-entrancy: A sink (handler or hook) may call Hook, Unhook, or SetMinLevel
@@ -239,7 +250,7 @@ func (l *Logger) WriteLog(level LogLevel, message []byte) (int, error) {
 	switch len(sinks) {
 	case 1:
 		// fast path: single sink, write inline without goroutine or WaitGroup.
-		err := writeSink(sinks[0], message)
+		err := writeSink(sinks[0], level, message)
 		if !anyHandlerActive {
 			// sole sink was a hook below the minimum level; return 0 per contract.
 			return 0, err
@@ -256,7 +267,7 @@ func (l *Logger) WriteLog(level LogLevel, message []byte) (int, error) {
 
 		write := func(w io.Writer) {
 			defer wg.Done()
-			if err := writeSink(w, message); err != nil {
+			if err := writeSink(w, level, message); err != nil {
 				mu.Lock()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -409,10 +420,11 @@ func unwrapLeveled(h io.Writer) (LeveledHandler, bool) {
 	return nil, false
 }
 
-// writeSink writes p to w, recovering any panic and returning it as an error that
-// carries the stack trace. A one-line notice goes to os.Stderr directly, not through
-// the std log package, because std log output may itself be routed into this logger.
-func writeSink(w io.Writer, p []byte) (err error) {
+// writeSink writes p to w, passing level to an optional LevelWriter. It recovers any
+// panic and returns an error that carries the stack trace. A one-line notice goes to
+// os.Stderr directly, not through the std log package, because std log output may
+// itself be routed into this logger.
+func writeSink(w io.Writer, level LogLevel, p []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			typ := sinkTypeName(w)
@@ -445,7 +457,11 @@ func writeSink(w io.Writer, p []byte) (err error) {
 		}
 	}()
 
-	_, err = w.Write(p)
+	if lw, ok := w.(LevelWriter); ok {
+		_, err = lw.WriteLevel(level, p)
+	} else {
+		_, err = w.Write(p)
+	}
 	return err
 }
 
@@ -454,15 +470,19 @@ func writeSink(w io.Writer, p []byte) (err error) {
 // For a *leveledWriter, it peels through to the inner writer.
 // Otherwise it returns the type of w.
 func sinkTypeName(w io.Writer) string {
-	if wr, ok := w.(*writer); ok && wr.original != nil {
-		w = wr.original
+	for {
+		switch sink := w.(type) {
+		case *writer:
+			if sink.original == nil {
+				return fmt.Sprintf("%T", w)
+			}
+			w = sink.original
+		case *leveledWriter:
+			w = sink.inner
+		default:
+			return fmt.Sprintf("%T", w)
+		}
 	}
-
-	if lw, ok := w.(*leveledWriter); ok {
-		w = lw.inner
-	}
-
-	return fmt.Sprintf("%T", w)
 }
 
 // sinkIdentity peels *leveledWriter layers and returns the identity key for deduplication.
