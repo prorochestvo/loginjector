@@ -19,7 +19,8 @@ rotation, and alerts.
 - **Stdlib-native usage** — hand components a `*log.Logger` via `StdLog`; they never
   import loginjector.
 - **Opt-in HTTP tapping** (`httptap`) — payload dump, access log, and panic-recover
-  middleware, with always-on redaction of auth/cookie headers.
+  middleware; the payload dump always redacts auth, cookie, and API-key headers and the
+  values of credential query parameters.
 - **Dependency-light** — no third-party runtime dependencies.
 
 ## Install
@@ -63,7 +64,7 @@ svc := NewService(dbLog, aiErr)            // takes *log.Logger
 s.log.Printf("request sent (model=%s)", model) // "sqlite request sent (model=gpt-4o)"
 ```
 
-The full API — handlers, error / JSON / closer helpers, `httptap` middleware, and every
+The full API — handlers, error and closer helpers, `httptap` middleware, and every
 option — is on [pkg.go.dev](https://pkg.go.dev/github.com/prorochestvo/loginjector).
 
 ## Notes
@@ -72,9 +73,14 @@ option — is on [pkg.go.dev](https://pkg.go.dev/github.com/prorochestvo/loginje
   intercept them.
 - **Emitter flags:** `StdLog` sets `log.Lmsgprefix` (prefix only) because the sink stamps
   the timestamp; a hand-built front logger with `log.LstdFlags` doubles it.
-- **`httptap` redaction is always on:** `Authorization`, `Proxy-Authorization`, `Cookie`,
-  and `Set-Cookie` are never logged. `NewRecoverHandler` buffers the response body, so keep
-  it off SSE / WebSocket / streaming routes.
+- **`httptap` redaction is always on:** the payload dump omits the default header set and
+  masks the values of the default credential query parameters; both sets are listed in the
+  `httptap` package docs on pkg.go.dev. Matching is case-insensitive, and options only add
+  names. Credentials inside the values of other headers (`Referer`, `Location`) are not
+  masked.
+- **`NewRecoverHandler` buffers the response** until the handler returns or calls `Flush`.
+  A `Flush` sends the buffered response; a panic after it aborts the connection
+  (`http.ErrAbortHandler`) instead of sending a 500.
 - **Stable-path rotation:** `RotatingFileHandler(dir, prefix, WithStableCurrentName())`
   keeps the live file at a fixed `prefix.log` path (backups stay indexed) so external
   tooling can follow it with `tail -F`; pair it with `WithMaxAge` and `WithCompress` for

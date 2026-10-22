@@ -20,11 +20,11 @@
 //
 //	const LevelInfo loginjector.LogLevel = 1
 //
-//	logger, _ := loginjector.NewLogger(LevelInfo)
+//	logger := loginjector.NewLogger(LevelInfo)
 //	myHandler := func(w http.ResponseWriter, r *http.Request) {
 //	    _, _ = w.Write([]byte("ok"))
 //	}
-//	logged, err := httptap.NewPayloadHandlerWithOptions(
+//	logged := httptap.NewPayloadHandlerWithOptions(
 //	    logger,
 //	    LevelInfo,
 //	    myHandler,
@@ -33,8 +33,5 @@
 //	    httptap.WithRedactHeaders("X-Api-Key"),
 //	    httptap.WithSummaryWriter(io.Discard),
 //	)
-//	if err != nil {
-//	    panic(err)
-//	}
 //	http.HandleFunc("/api", logged)
 package httptap
