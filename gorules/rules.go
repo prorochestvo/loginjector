@@ -1,8 +1,10 @@
 //go:build ruleguard
 
 // Package gorules holds the review rules that no upstream linter implements.
-// They are interpreted by gocritic's ruleguard check, so this file is never
-// compiled into a binary and needs no entry in go.mod.
+// The ruleguard build tag keeps this file out of every build. gocritic's
+// ruleguard check type-checks it against this module, so
+// github.com/quasilyte/go-ruleguard/dsl is a direct requirement in go.mod and
+// consumers see it only as a module-graph entry.
 //
 // A rule belongs here only when it is expressible as a local AST pattern.
 // Rules that need flow analysis across statements (for example "this rows

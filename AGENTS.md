@@ -1,124 +1,79 @@
-# CLAUDE.md
+# loginjector
 
-## What this is
+`github.com/prorochestvo/loginjector` is a Go logging library, not a service: a `Logger`
+fans each message out to `io.Writer` sinks (handlers and level hooks). Consumers embed it;
+there is no binary, database, or server.
 
-`github.com/prorochestvo/loginjector` is a small, dependency-light Go **logging library** (not a service): a `Logger` fans a message out to a set of `io.Writer` handlers, plus ready-made handlers (console, file rotation, Telegram), level-targeted hooks, and orthogonal helpers (JSON, `io.Closer` wrappers, stack-trace / HTTP error types). Opt-in HTTP traffic tapping lives in `httptap/`. Consumers `go get` and embed it — no binary, no database, no HTTP server of its own.
+## Commands
 
-## Build & Test Commands
+- `make test` — race suite (`CGO_ENABLED=1`; on Linux `-race` needs cgo and a C compiler).
+- `make verify` — every check; the list is the `verify` prerequisites in `Makefile`. The
+  golangci-lint pin is `GOLANGCI_VERSION` in `Makefile`; `make lint-install` installs it.
+- `make format` / `make tidy` rewrite files; no other target does.
+- CI: `.github/workflows/ci.yml` runs `make verify`, and `make test` and `make build` on the
+  `go.mod` floor.
 
-**No Makefile** — use raw `go`. The package builds clean with `CGO_ENABLED=0` (pure Go, no cgo deps), but the race detector needs cgo on this arm64 host, so race tests run with `CGO_ENABLED=1` (append `-run <name>` for a single test/subtest):
+## Map
 
-```bash
-CGO_ENABLED=1 go test -race ./...    # full suite (race needs cgo on this arm64 host)
-CGO_ENABLED=0 go test ./...          # no-cgo build proof
-go vet ./... && gofmt -l .           # vet + list unformatted
-```
+| Path | Role |
+|---|---|
+| `logger.go` | `Logger`: fan-out, hooks, `LeveledHandler`, `WriterAs`, `StdLog`, `Panicf`/`Panic` |
+| `handler.go` | handler factories: console, rotating file, file-by-format, Telegram, `WithMinLevel` |
+| `filelogger.go` | `NewFileLogger` bootstrap and its options |
+| `error.go`, `closers.go` | error types (`TraceError`, `StackTraceError`, `PublicError`, `HttpError`); `CloseOr*` |
+| `levels/` | optional `Debug`..`Critical` ladder, `Parse`/`Name` |
+| `httptap/` | opt-in HTTP middleware: payload, access, recover; the root package never imports it |
+| `internal/` | stack-trace parsing for `error.go`; `internal/synctest` is test-only scaffolding |
+| `gorules/`, `scripts/` | custom lint rules (ruleguard DSL) and text-level checks |
 
-## Architecture
+## Tripwires
 
-Three packages:
-
-| Package | Location | Role |
-|---------|----------|------|
-| `loginjector` | repo root (`*.go`) | public API: `Logger`, handlers, hooks, helpers |
-| `httptap` | `httptap/` | opt-in HTTP traffic tap — `NewPayloadHandler`, `NewAccessHandler`, options DSL, interface pass-through wrappers |
-| `internal` | `internal/` | `StackTrace()` / `LineTrace()` — debug-stack parsing, used by `TraceError` |
-
-### The fan-out model (`logger.go`)
-
-`Logger` holds a `minimumLogLevel`, a slice of `handlers []io.Writer`, a slice of
-`hooks`, and an `sync.RWMutex`. The central method is:
-
-```go
-func (l *Logger) WriteLog(level LogLevel, message []byte) (int, error)
-```
-
-For each call it dispatches the message to two distinct sinks, **each handler/hook
-write running in its own goroutine**, joined with a `sync.WaitGroup` and aggregated via
-`errors.Join`:
-
-1. **Hooks** — fire on an **exact level match** (`level == hook.Level`), *regardless of
-   `minimumLogLevel`*. This is the key asymmetry: a hook on a low-severity level still
-   fires even when that level is below the configured minimum.
-2. **Handlers** — fire only when `level >= minimumLogLevel`. Below the minimum,
-   handlers are skipped and `WriteLog` returns `(0, nil)`.
-
-Every handler/hook sink is wrapped in a mutex-guarded `writer` at registration
-(`ensureThreadSafe` in `NewLogger`/`Hook`), so the logger never calls a given sink's
-`Write` concurrently — logging from many goroutines is safe even with a plain,
-non-thread-safe writer (e.g. a `bytes.Buffer`). Within a `WriteLog` call, errors from
-the concurrent sinks are collected under a mutex and joined after `wg.Wait()`.
-
-Convenience writers: `Printf`/`Print`, `Write` (`io.Writer` at `minimumLogLevel`), and `Fatalf`/`Fatal` — which **`panic`, they do not `os.Exit`** (non-obvious).
-
-### LogLevel is consumer-defined
-
-`LogLevel` is just `type LogLevel int`. **The root package ships no DEBUG/INFO/WARN/ERROR
-constants** — the consumer declares their own, or imports the `levels` subpackage
-(`Debug`..`Critical` = 1..6, plus `Parse`/`Name`). Severity ordering is by integer value:
-higher = more severe, since the gate is `level < minimumLogLevel`.
-
-### Plugging the logger into other writers
-
-`WriterAs(level)` / `JoinAs(level, outputs...)` adapt the logger to an `io.Writer` at a fixed level — e.g. to hand it to the std `log` package or a third-party sink as an `io.Writer`.
-
-### Handlers (`handler.go`)
-
-Every handler is a **factory function returning `io.Writer`**, internally wrapping a mutex-guarded `writer` so each handler serializes its own writes. `TimestampedPrintHandler()` is the default when `NewLogger` gets no handlers. File handlers (`RotatingFileHandler`, `FileByFormatHandler`) share `.log` extension, `0640` perms, append mode, and oldest-first pruning past their max-files bound; runtime logs live under `./logs/`. `RotatingFileHandler` carries opt-in `RotatingFileOption`s — `WithStableCurrentName` (fixed `prefix.log` live path for `tail -F`), `WithMaxAge` (mtime retention), `WithCompress` (gzip backups) — all off by default and byte-identical when unused.
-
-### HTTP traffic tap (`httptap/`)
-
-The HTTP tap lives in `github.com/prorochestvo/loginjector/httptap`. Import it
-separately when you need HTTP traffic tapping; the root package does not pull it in.
-
-`httptap.NewPayloadHandler(logger, level, nextFunc)` wraps an `http.HandlerFunc` and logs the full request+response through the logger. **Security contract: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` are always redacted (`headerToStringWithRedact`) — this default set is always-on and cannot be removed.** `NewPayloadHandlerWithOptions(...opts)` is a strict superset (zero options → byte-identical output); its options (`WithMaxRequestBody`/`WithMaxResponseBody`/`WithoutBodies`, additive-only `WithRedactHeaders`, `WithSummaryWriter`) live in `httptap/payload.go`. `NewAccessHandler(out, nextFunc)` is the lightweight one-line-per-request access log, writing to any `io.Writer` (no `*Logger`).
-
-The `interceptor` doesn't implement `http.Flusher`/`Hijacker`/`Pusher` directly; `wrapWithOptionalInterfaces` returns one of eight composite `*RW` types advertising exactly the optional interfaces the underlying `ResponseWriter` has, so streaming/SSE/WebSocket/HTTP-2-push work through the middleware (`io.ReaderFrom`/`http.CloseNotifier` are not bridged).
-
-### Cross-cutting helpers
-
-`error.go` (`TraceError`, `HttpError`), `json.go` (`JsonEncode`/`JsonDecode`; `…AndClose` variants close after, `…Ex` variants also return raw bytes; optional `indent` variadic pretty-prints), `closers.go` (`CloseOr*` for `defer`-ing `io.Closer` cleanup).
-
-## Conventions
-
-Generic Go conventions (style, declaration order, test structure, godoc, error discipline,
-build hygiene, organisation) come from the `stack-go` plugin skills and are not restated
-anywhere in this repo. Project-specific constraints:
-
-- **No CGO**: keep the package cgo-free (`CGO_ENABLED=0` builds clean); the `-race`
-  gate is the exception — it needs cgo (see Build & Test). The only direct deps are
-  `stretchr/testify` (tests) and `twinj/uuid` (hook IDs) — avoid adding heavy or
-  CGO-dependent dependencies.
-- **Race coverage is load-bearing**: concurrency-sensitive handlers have dedicated
-  `…ForRaceCondition` tests — keep that coverage when touching the fan-out or the
-  file handlers; tests always run with `-race`.
-- **Legacy test names**: some existing tests (e.g. `TestJsonEncode_indent`,
-  `TestFileByFormatHandlerV2`) predate the one-`Test*`-per-method rule; prefer the
-  canonical subtest form for new and refactored tests, don't mass-rename.
-- **No Makefile**: gates run as raw Go commands (`gofmt -l .`, `go vet ./...`,
-  `CGO_ENABLED=1 go test -race ./...` — race needs cgo on this arm64 host).
+- Go conventions come from the `stack-go` skills and the owner's R# rules; declaration
+  order is R16; `funcorder` enforces only constructor and method placement.
+- Local `make verify` runs on the current toolchain and does not catch standard-library
+  APIs newer than the `go.mod` floor (1.22.2); CI's floor job does. It cannot be
+  reproduced locally: Go 1.22.2 test binaries abort on macOS 27.
+- `LogLevel` is a bare `int`; the root package defines no level constants. Higher is more
+  severe.
+- Hooks fire on an exact level match even below the minimum level. A handler fires at
+  or above its own `MinLevel()` when it implements `LeveledHandler` (`WithMinLevel`),
+  otherwise at or above the logger minimum.
+- Within one logger, writes to a pointer sink are serialised per sink identity (a sink
+  shared by two loggers is not); the logger releases its lock before sinks run and
+  returns a sink panic as an error. `Write`/`WriterAs` report `len(p)` for a message
+  filtered below the threshold.
+- Deadlocks (see the `Logger` godoc): a sink re-entering itself, including through a
+  second registration of the same sink; std `log` re-entry from a sink; a sink writing
+  to the `WriterAs` adapter the outer call came through.
+- `Panicf`/`Panic` panic; the library never calls `os.Exit`.
+- `TelegramHandler` is a synchronous HTTP POST (20 s timeout): a matching message blocks
+  its caller.
+- `httptap` redaction: the default header and query-parameter sets in
+  `httptap/redact.go` are always on and case-insensitive; options only add names. Do not
+  weaken them.
+- Runtime dependencies: standard library only (`testify` is test-only; `gorules` needs
+  `go-ruleguard/dsl` and is never compiled); the module builds with `CGO_ENABLED=0`.
+- Keep the `…ForRaceCondition` tests when touching the fan-out or the file handlers.
+- `TestFileByFormatHandlerV2` predates the one-`Test*`-per-symbol rule; do not rename
+  legacy tests in unrelated changes.
 
 ## Working agreement
 
 Plan-first pipeline; the canonical procedure is the `pipeline:working-agreement` skill — load it
 before starting non-trivial work. Project delta:
 
-- **Gate:** `gofmt -l .` clean, then `go vet ./...` and `CGO_ENABLED=1 go test -race ./...`
+- **Gate:** `make verify`.
 - **Review focus:** standard staged set — see `pipeline:working-agreement`.
-- **Branching:** `type/<issue>-<slug>`, PR into `main`; long-running feature branches
-  squash-merge, which the Release & CHANGELOG workflow below depends on.
+- **Branching:** `type/<issue>-<slug>`, PR into `main`, squash-merged; CI must be green.
 
-## Release & CHANGELOG workflow
+## Release and CHANGELOG
 
-Long-running feature branches **squash-merge** into `main` — the whole branch lands as
-one commit. The CHANGELOG entry for that release is therefore **one version section**
-covering everything in the branch, not a sequence of per-commit entries written as the
-branch grows.
-
-While a branch is in flight, accumulate under `[Unreleased]` (Keep a Changelog format); on release promote it to `[X.Y.Z] - YYYY-MM-DD` and reset the stub. Next version = latest tag (`git tag --sort=-version:refname | head -1`) + implied SemVer bump (breaking → major, new `Added` → minor, else patch).
-
-**Before writing or updating `CHANGELOG.md`, read the file first** even if you think
-it doesn't exist — `ls CHANGELOG* CHANGES*` from `fish` aborts on the first non-matching
-glob and silently skips the rest, so a present `CHANGELOG.md` can look absent. A prior
-session may have already started the `[Unreleased]` entry; you may be completing it
-rather than writing from scratch.
+- A branch lands as one squash commit and gets one version section: collect entries
+  under `[Unreleased]`, promote to `[X.Y.Z] - YYYY-MM-DD` on release, add its compare link,
+  and move `[Unreleased]`'s link base to the new tag.
+- The 1.0.x line is pre-stable: next version = latest tag
+  (`git tag --sort=-version:refname | head -1`) + PATCH, regardless of `Added` or
+  breaking entries; breaking changes are documented in the version's
+  `BREAKING CHANGES` section.
+- Read `CHANGELOG.md` before editing it: under `fish`, `ls CHANGELOG*` aborts on the first
+  unmatched glob and can hide the file; an `[Unreleased]` section may already exist.
