@@ -193,3 +193,79 @@ func (l *lockedWriter) Write(b []byte) (int, error) {
 	defer l.mu.Unlock()
 	return l.w.Write(b)
 }
+
+// statusLogWriter is a fake http.ResponseWriter + http.Flusher that records
+// every WriteHeader call (including 1xx informational), modeling net/http's
+// 1xx semantics (informational codes do not commit a final status).
+type statusLogWriter struct {
+	*httptest.ResponseRecorder
+	statusCodes     []int
+	headerSnapshots []http.Header
+	finalStatus     int
+	finalHeaders    http.Header
+	body            []byte
+	flushed         bool
+}
+
+func newStatusLogWriter() *statusLogWriter {
+	return &statusLogWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		statusCodes:      make([]int, 0),
+		headerSnapshots:  make([]http.Header, 0),
+	}
+}
+
+func (s *statusLogWriter) WriteHeader(code int) {
+	s.statusCodes = append(s.statusCodes, code)
+	// Record a header snapshot at each WriteHeader call.
+	headerSnapshot := s.Header().Clone()
+	s.headerSnapshots = append(s.headerSnapshots, headerSnapshot)
+	// Track the final status (the last non-1xx code).
+	if code < 100 || code > 199 || code == 101 {
+		s.finalStatus = code
+		s.finalHeaders = headerSnapshot
+	}
+	// Don't call the recorder's WriteHeader; it treats all codes as final.
+	// Instead, just record the code.
+}
+
+func (s *statusLogWriter) Write(b []byte) (int, error) {
+	s.body = append(s.body, b...)
+	return s.ResponseRecorder.Write(b)
+}
+
+func (s *statusLogWriter) Flush() {
+	s.flushed = true
+}
+
+var _ http.ResponseWriter = &statusLogWriter{}
+var _ http.Flusher = &statusLogWriter{}
+
+// hookRecordingBase is a test stub that implements tapWriter and records
+// beforeFlush calls for testing the flush hook.
+type hookRecordingBase struct {
+	onBeforeFlush func()
+}
+
+func (h *hookRecordingBase) Header() http.Header         { return httptest.NewRecorder().Header() }
+func (h *hookRecordingBase) Write(b []byte) (int, error) { return len(b), nil }
+func (h *hookRecordingBase) WriteHeader(_ int)           {}
+func (h *hookRecordingBase) markHijacked()               {}
+func (h *hookRecordingBase) beforeFlush() {
+	if h.onBeforeFlush != nil {
+		h.onBeforeFlush()
+	}
+}
+
+var _ tapWriter = &hookRecordingBase{}
+
+// recordingFlusher is a test stub that records Flush calls.
+type recordingFlusher struct {
+	onFlush func()
+}
+
+func (r *recordingFlusher) Flush() {
+	if r.onFlush != nil {
+		r.onFlush()
+	}
+}

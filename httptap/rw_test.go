@@ -5,12 +5,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	loginjector "github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// compile-time checks that each tap writer satisfies tapWriter.
+var _ tapWriter = (*accessResponseWriter)(nil)
+var _ tapWriter = (*interceptor)(nil)
+var _ tapWriter = (*recoverResponseWriter)(nil)
 
 // compile-time checks that each concrete wrapper satisfies its claimed interfaces.
 var _ http.ResponseWriter = &flusherRW{}
@@ -289,5 +295,53 @@ func TestWrapInterceptor(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/hijack", bytes.NewBufferString(""))
 		require.NotPanics(t, func() { h(fw, req) }, "handler must not panic after hijack")
 		require.False(t, flushCalled, "Flush must not be called after hijack")
+	})
+
+	t.Run("flush_calls_before_flush_hook", func(t *testing.T) {
+		t.Parallel()
+
+		// Test that beforeFlush is called before the real Flusher.Flush().
+		// Use a test stub that records both hook and flush calls in order.
+		hookCalls := make([]string, 0)
+		var mu sync.Mutex
+
+		// Create a fake base that records beforeFlush calls.
+		fakeBase := &hookRecordingBase{
+			onBeforeFlush: func() {
+				mu.Lock()
+				hookCalls = append(hookCalls, "hook")
+				mu.Unlock()
+			},
+		}
+
+		// Create a flusher wrapper around the base.
+		wrapped := &flusherRW{
+			tapWriter: fakeBase,
+			flusher: &recordingFlusher{
+				onFlush: func() {
+					mu.Lock()
+					hookCalls = append(hookCalls, "flush")
+					mu.Unlock()
+				},
+			},
+		}
+
+		wrapped.Flush()
+
+		require.Equal(t, []string{"hook", "flush"}, hookCalls, "beforeFlush hook must run before Flush()")
+	})
+
+	t.Run("statusLogWriter_models_1xx_semantics", func(t *testing.T) {
+		t.Parallel()
+
+		// statusLogWriter records every WriteHeader call,
+		// modeling net/http's 1xx informational handling.
+		slw := newStatusLogWriter()
+		slw.WriteHeader(http.StatusContinue)
+		slw.WriteHeader(http.StatusOK)
+		slw.Flush()
+
+		require.Equal(t, []int{http.StatusContinue, http.StatusOK}, slw.statusCodes, "all WriteHeader calls must be recorded")
+		require.True(t, slw.flushed, "Flush must be recorded")
 	})
 }

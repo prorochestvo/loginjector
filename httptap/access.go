@@ -26,6 +26,10 @@ import (
 // decimal places. Path is r.URL.Path captured before next runs, so downstream
 // path rewrites do not affect the logged value.
 //
+// Status code is [200] for a handler that returns normally without writing;
+// [000] when the connection is hijacked or the handler panics before committing
+// a status; or the recorded status for any other case.
+//
 // A nil out or next is a programmer error and panics.
 //
 // Format is intentionally fixed. Anything beyond these four fields (request ID,
@@ -41,22 +45,30 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		method := r.Method
-		path := r.URL.Path
+		path := escapeControl(r.URL.Path)
 		start := time.Now()
 
 		arw := &accessResponseWriter{ResponseWriter: w}
 		wrapped := wrapWithOptionalInterfaces(arw, w)
 
+		completed := false
 		defer func() {
 			elapsed := time.Since(start)
+			code := arw.statusCode
+			if !arw.wroteHeader && !arw.hijacked && completed {
+				code = http.StatusOK
+			}
 			_, _ = fmt.Fprintf(out, "%s [%03d] %s %s %0.3fms\n",
 				time.Now().UTC().Format(time.RFC3339Nano),
-				arw.statusCode, method, path,
+				code,
+				method,
+				path,
 				float64(elapsed)/1e6,
 			)
 		}()
 
 		next(wrapped, r)
+		completed = true
 	}
 }
 
@@ -71,10 +83,16 @@ type accessResponseWriter struct {
 	hijacked    bool
 }
 
-// WriteHeader records the status code on the first call only; subsequent calls
-// are silent no-ops, mirroring net/http's own "WriteHeader more than once"
+// WriteHeader records the status code on the first final call only; informational
+// responses (100-199 except 101) are forwarded without recording. Subsequent final
+// calls are silent no-ops, mirroring net/http's own "WriteHeader more than once"
 // handling.
 func (a *accessResponseWriter) WriteHeader(code int) {
+	if isInformational(code) {
+		// forward 1xx without recording
+		a.ResponseWriter.WriteHeader(code)
+		return
+	}
 	if a.wroteHeader {
 		return
 	}
@@ -97,6 +115,17 @@ func (a *accessResponseWriter) Write(b []byte) (int, error) {
 // connection has been hijacked so the field is available for future use.
 func (a *accessResponseWriter) markHijacked() { a.hijacked = true }
 
+// beforeFlush records the implicit 200 that the real Flush commits when no
+// final status has been written yet.
+func (a *accessResponseWriter) beforeFlush() {
+	if a.hijacked {
+		return
+	}
+	if !a.wroteHeader {
+		a.statusCode = http.StatusOK
+		a.wroteHeader = true
+	}
+}
+
 // compile-time interface assertions.
 var _ http.ResponseWriter = (*accessResponseWriter)(nil)
-var _ hijackMarker = (*accessResponseWriter)(nil)
