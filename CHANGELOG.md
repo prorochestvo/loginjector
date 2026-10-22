@@ -60,6 +60,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `http.NewRequestWithContext`, declaration order, removal of the unused internal
   `newInterceptor`). Tests run in parallel where isolated; tests that touch process-global
   state stay serial with a recorded reason.
+- `WithMaxFiles`, `WithMaxFilesInFolder`, and `FileByFormatHandler`'s `maxFilesInFolder` treat
+  values below 1 as 1 instead of deleting every file.
+- `RotatingFileHandler` and `FileByFormatHandler` report a close, rotation, or prune error that
+  follows a full write with `n == len(p)` and the non-nil error.
+- With `WithMaxAge`, the backup produced by a rotation is no longer aged out by that same
+  rotation; it becomes eligible on the next rotation.
+- `FileByFormatHandler` rejects generated names that are empty, `.`, `..`, or contain a path
+  separator: `Write` returns 0 and an error and creates nothing. Previously an empty name wrote
+  a hidden `.log` file and a name such as `2026/10/22` wrote into an existing subfolder.
+  Migration: give each subfolder its own handler, or generate a flat name such as
+  `2026-10-22`. On Windows, reserved device names such as `NUL` or `COM1` are also rejected.
+- Directory-listing errors other than a missing folder (for example a folder that is writable
+  but not readable) are now returned instead of ignored: by `RotatingFileHandler` on the first
+  write and on each rotation, and by `FileByFormatHandler` on each prune (when the generated
+  name changes). When the line itself was written, `Write` returns the error with
+  `n == len(p)`. Previously such errors were dropped and retention silently stopped.
 
 ### Fixed
 
@@ -91,6 +107,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `TestRotatingFileHandlerForRaceCondition` joined errors from several goroutines without a
   lock, and `TestFileByFormatHandlerForRaceCondition` called `require` off the test
   goroutine; both are corrected. `TestLogger_Write` now restores the std `log` output.
+- `RotatingFileHandler` rotation scans no longer interpret glob metacharacters in the folder
+  path: a folder such as `logs/app[1]` no longer resumes from, prunes, or fresh-start-deletes
+  files in `logs/app1`, and `logs/app[` no longer fails every rotation.
+- With `WithMaxFiles(1)` and `WithCompress`, `WithStableCurrentName`, or `WithMaxAge`, the
+  backup holding the rotation-triggering write is no longer deleted, including when the
+  rotation moves into a pre-existing higher-index file.
+- `FileByFormatHandler` no longer writes outside its folder when the generator returns a name
+  such as `../x`, and never prunes the file it has just written, including when a
+  differently-cased generated name resolves to the same file on a case-insensitive filesystem.
+- `RotatingFileHandler` and `FileByFormatHandler` return `len(p)` after a full write and 0 on a
+  failed write, per the `io.Writer` contract (previously `len(TrimSpace(p))+1`); each line is
+  written with a single write call. As a side effect, a line and its newline are no longer
+  split across two writes.
+- `NewFileLogger` no longer changes the permissions of a pre-existing folder; it sets 0750 only
+  on a folder it creates and on the temp-fallback folder.
 
 ### Security
 
@@ -99,6 +130,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `id_token`, `client_secret`, `api_key`, `apikey`, `password`). Control characters can no
   longer forge log lines through the path. Note: header values (including `Referer` and
   `Location`, which can carry OAuth `code` / `access_token`) are not redacted or escaped.
+- `NewFileLogger` with `WithTempDirFallback` no longer adopts an existing
+  `filepath.Join(os.TempDir(), "logs")` that is a symlink, is not a directory, or (on Unix) is
+  owned by another user; it returns an error instead of changing the permissions of the link
+  target and writing logs into it.
 
 ## [1.0.9] - 2026-07-22
 

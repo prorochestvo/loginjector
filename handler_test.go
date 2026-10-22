@@ -77,6 +77,138 @@ func TestTelegramHandler(t *testing.T) {
 
 func TestRotatingFileHandler(t *testing.T) {
 	t.Parallel()
+	assertRetains := func(t *testing.T, maxFiles int) {
+		t.Helper()
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(3), WithMaxFiles(maxFiles))
+
+		_, err := h.Write([]byte("abcd"))
+		require.NoError(t, err)
+		content, err := os.ReadFile(filepath.Join(dir, "app.00000001.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("abcd\n"), content)
+	}
+	t.Run("max files zero retains rotated write", func(t *testing.T) {
+		t.Parallel()
+		assertRetains(t, 0)
+	})
+	t.Run("negative max files retains rotated write", func(t *testing.T) {
+		t.Parallel()
+		assertRetains(t, -5)
+	})
+	t.Run("folder with glob metacharacters is literal", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir := filepath.Join(base, "app[1]")
+		decoyDir := filepath.Join(base, "app1")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.MkdirAll(decoyDir, 0o750))
+		decoys := make(map[string][]byte)
+		for i := 1; i <= 3; i++ {
+			name := fmt.Sprintf("app.%08d.log", i)
+			content := []byte(fmt.Sprintf("decoy-%d\n", i))
+			decoys[name] = content
+			require.NoError(t, os.WriteFile(filepath.Join(decoyDir, name), content, 0o640))
+		}
+
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(4), WithMaxFiles(2))
+		for range 6 {
+			_, err := h.Write([]byte("0123456789"))
+			require.NoError(t, err)
+		}
+
+		for name, content := range decoys {
+			actual, err := os.ReadFile(filepath.Join(decoyDir, name))
+			require.NoError(t, err)
+			require.Equal(t, content, actual)
+		}
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		require.Len(t, entries, 2)
+		require.FileExists(t, filepath.Join(dir, "app.00000005.log"))
+		require.FileExists(t, filepath.Join(dir, "app.00000006.log"))
+	})
+	t.Run("fresh start leaves glob-decoy folder untouched", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir := filepath.Join(base, "app[1]")
+		decoyDir := filepath.Join(base, "app1")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.MkdirAll(decoyDir, 0o750))
+		decoy := filepath.Join(decoyDir, "app.00000001.log")
+		content := []byte("decoy survives\n")
+		require.NoError(t, os.WriteFile(decoy, content, 0o640))
+
+		h := RotatingFileHandler(dir, "app", WithFreshStart())
+		actual, err := os.ReadFile(decoy)
+		require.NoError(t, err, "construction must not remove a file in the glob-decoy folder")
+		require.Equal(t, content, actual)
+		_, err = h.Write([]byte("first"))
+		require.NoError(t, err)
+		actual, err = os.ReadFile(decoy)
+		require.NoError(t, err, "the first write must not prune the glob-decoy folder")
+		require.Equal(t, content, actual)
+	})
+	t.Run("compressed rotation leaves glob-decoy files untouched", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir := filepath.Join(base, "app[1]")
+		decoyDir := filepath.Join(base, "app1")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.MkdirAll(decoyDir, 0o750))
+		decoys := map[string][]byte{
+			"app.00000001.log":        []byte("plain decoy\n"),
+			"app.00000002.log.gz":     []byte("compressed decoy"),
+			"app.00000003.log.gz.tmp": []byte("temporary decoy"),
+		}
+		for name, content := range decoys {
+			require.NoError(t, os.WriteFile(filepath.Join(decoyDir, name), content, 0o640))
+		}
+
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(4), WithMaxFiles(2), WithCompress())
+		for range 3 {
+			_, err := h.Write([]byte("0123456789"))
+			require.NoError(t, err)
+		}
+		for name, content := range decoys {
+			actual, err := os.ReadFile(filepath.Join(decoyDir, name))
+			require.NoError(t, err)
+			require.Equal(t, content, actual)
+		}
+	})
+	t.Run("malformed glob folder", func(t *testing.T) {
+		t.Parallel()
+		dir := filepath.Join(t.TempDir(), "app[")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(4), WithMaxFiles(2))
+		for range 3 {
+			_, err := h.Write([]byte("0123456789"))
+			require.NoError(t, err)
+		}
+	})
+	t.Run("folder entry that is a directory is ignored", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		matchingDir := filepath.Join(dir, "app.00000009.log")
+		require.NoError(t, os.Mkdir(matchingDir, 0o750))
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(4), WithMaxFiles(2))
+		for range 3 {
+			_, err := h.Write([]byte("0123456789"))
+			require.NoError(t, err)
+		}
+		info, err := os.Stat(matchingDir)
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		regularFiles := 0
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				regularFiles++
+			}
+		}
+		require.Equal(t, 2, regularFiles)
+	})
 	t.Run("prunes only its own prefix files", func(t *testing.T) {
 		t.Parallel()
 		tmpFolder := t.TempDir()
@@ -246,6 +378,40 @@ func TestRotatingFileHandler(t *testing.T) {
 
 	t.Run("resume tolerates foreign filenames", testRotatingFileHandlerResumeToleratesForeign)
 	t.Run("resume handles glob metacharacters in prefix", testRotatingFileHandlerResumeGlobMeta)
+	t.Run("Write reports the input length and writes a trimmed line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app")
+
+		n, err := h.Write([]byte("  hi  \n"))
+		require.NoError(t, err)
+		require.Equal(t, 7, n)
+		content, err := os.ReadFile(filepath.Join(dir, "app.00000001.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("hi\n"), content)
+	})
+	t.Run("Write of an empty message reports zero and writes a newline", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app")
+
+		n, err := h.Write([]byte{})
+		require.NoError(t, err)
+		require.Zero(t, n)
+		content, err := os.ReadFile(filepath.Join(dir, "app.00000001.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("\n"), content)
+	})
+	t.Run("Write to a regular file as folder reports open failure", func(t *testing.T) {
+		t.Parallel()
+		folder := filepath.Join(t.TempDir(), "notadir")
+		require.NoError(t, os.WriteFile(folder, []byte("file"), 0o640))
+		h := RotatingFileHandler(folder, "app")
+
+		n, err := h.Write([]byte("line"))
+		require.Error(t, err)
+		require.Zero(t, n)
+	})
 }
 
 func TestRotatingFileHandlerForRaceCondition(t *testing.T) {
@@ -292,6 +458,191 @@ func TestRotatingFileHandlerForRaceCondition(t *testing.T) {
 
 func TestFileByFormatHandler(t *testing.T) {
 	t.Parallel()
+	t.Run("case-insensitive filesystem keeps the file just written", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		probe := filepath.Join(dir, "probe.log")
+		require.NoError(t, os.WriteFile(probe, []byte("probe"), 0o600))
+		_, err := os.Stat(filepath.Join(dir, "PROBE.LOG"))
+		if err != nil {
+			t.Skip("filesystem is case-sensitive")
+		}
+		require.NoError(t, os.Remove(probe))
+
+		names := []string{"app", "App"}
+		nameIndex := 0
+		h := FileByFormatHandler(dir, 1, func() string {
+			name := names[nameIndex]
+			nameIndex++
+			return name
+		})
+		_, err = h.Write([]byte("first"))
+		require.NoError(t, err)
+		_, err = h.Write([]byte("second"))
+		require.NoError(t, err)
+
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		var logFiles []os.DirEntry
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
+				logFiles = append(logFiles, entry)
+			}
+		}
+		require.Len(t, logFiles, 1)
+		content, err := os.ReadFile(filepath.Join(dir, logFiles[0].Name()))
+		require.NoError(t, err)
+		require.Contains(t, string(content), "second\n")
+	})
+	t.Run("name with separator does not write into an existing subfolder", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dir, "a"), 0o750))
+		h := FileByFormatHandler(dir, 10, func() string { return "a/b" })
+
+		n, err := h.Write([]byte("line"))
+		require.Error(t, err)
+		require.Zero(t, n)
+		require.NoFileExists(t, filepath.Join(dir, "a", "b.log"))
+	})
+	t.Run("zero max files retains the written file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		h := FileByFormatHandler(dir, 0, func() string { return "first" })
+
+		_, err := h.Write([]byte("line"))
+		require.NoError(t, err)
+		content, err := os.ReadFile(filepath.Join(dir, "first.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("line\n"), content)
+	})
+	t.Run("keeps the current file when names are not time sorted", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		names := []string{"b", "a"}
+		nameIndex := 0
+		h := FileByFormatHandler(dir, 1, func() string {
+			name := names[nameIndex]
+			nameIndex++
+			return name
+		})
+
+		_, err := h.Write([]byte("first line"))
+		require.NoError(t, err)
+		_, err = h.Write([]byte("second line"))
+		require.NoError(t, err)
+		content, err := os.ReadFile(filepath.Join(dir, "a.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("second line\n"), content)
+		require.NoFileExists(t, filepath.Join(dir, "b.log"))
+	})
+	t.Run("rejects generated names that are not plain file names", func(t *testing.T) {
+		t.Parallel()
+		assertRejects := func(t *testing.T, name string) {
+			t.Helper()
+			parent := t.TempDir()
+			dir := filepath.Join(parent, "logs")
+			require.NoError(t, os.Mkdir(dir, 0o750))
+			h := FileByFormatHandler(dir, 10, func() string { return name })
+
+			n, err := h.Write([]byte("line"))
+			require.Error(t, err)
+			require.Zero(t, n)
+			entries, readErr := os.ReadDir(dir)
+			require.NoError(t, readErr)
+			require.Empty(t, entries)
+			require.NoFileExists(t, filepath.Join(filepath.Dir(dir), "escape.log"))
+		}
+		t.Run("parent traversal", func(t *testing.T) {
+			t.Parallel()
+			assertRejects(t, "../escape")
+		})
+		t.Run("nested path", func(t *testing.T) {
+			t.Parallel()
+			assertRejects(t, "a/b")
+		})
+		t.Run("empty name", func(t *testing.T) {
+			t.Parallel()
+			assertRejects(t, "")
+		})
+		t.Run("dot", func(t *testing.T) {
+			t.Parallel()
+			assertRejects(t, ".")
+		})
+		t.Run("double dot", func(t *testing.T) {
+			t.Parallel()
+			assertRejects(t, "..")
+		})
+	})
+	t.Run("valid generated name writes the expected bytes", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		h := FileByFormatHandler(dir, 10, func() string { return "2026-10-22" })
+
+		_, err := h.Write([]byte("line"))
+		require.NoError(t, err)
+		content, err := os.ReadFile(filepath.Join(dir, "2026-10-22.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("line\n"), content)
+	})
+	t.Run("Write reports the input length and writes a trimmed line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		h := FileByFormatHandler(dir, 10, func() string { return "app" })
+
+		n, err := h.Write([]byte("  hi  \n"))
+		require.NoError(t, err)
+		require.Equal(t, 7, n)
+		content, err := os.ReadFile(filepath.Join(dir, "app.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("hi\n"), content)
+	})
+	t.Run("Write of an empty message reports zero and writes a newline", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		h := FileByFormatHandler(dir, 10, func() string { return "app" })
+
+		n, err := h.Write([]byte{})
+		require.NoError(t, err)
+		require.Zero(t, n)
+		content, err := os.ReadFile(filepath.Join(dir, "app.log"))
+		require.NoError(t, err)
+		require.Equal(t, []byte("\n"), content)
+	})
+	t.Run("folder with glob metacharacters is literal", func(t *testing.T) {
+		t.Parallel()
+		base := t.TempDir()
+		dir := filepath.Join(base, "f[1]")
+		decoyDir := filepath.Join(base, "f1")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.MkdirAll(decoyDir, 0o750))
+		decoys := map[string][]byte{
+			"old1.log": []byte("old one\n"),
+			"old2.log": []byte("old two\n"),
+		}
+		for name, content := range decoys {
+			require.NoError(t, os.WriteFile(filepath.Join(decoyDir, name), content, 0o640))
+		}
+		names := []string{"first", "second"}
+		nameIndex := 0
+		h := FileByFormatHandler(dir, 1, func() string {
+			name := names[nameIndex]
+			nameIndex++
+			return name
+		})
+		for range 2 {
+			_, err := h.Write([]byte("payload"))
+			require.NoError(t, err)
+		}
+		for name, content := range decoys {
+			actual, err := os.ReadFile(filepath.Join(decoyDir, name))
+			require.NoError(t, err)
+			require.Equal(t, content, actual)
+		}
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+	})
 	tmpFolder := t.TempDir()
 
 	m := sync.Mutex{}
@@ -421,24 +772,28 @@ func TestVerifyFiles(t *testing.T) {
 	t.Parallel()
 	tmpFolder := t.TempDir()
 
-	err := verifyFiles(tmpFolder, 3)
+	err := verifyFiles(tmpFolder, 3, filepath.Join(tmpFolder, "0-current.log"))
 	require.NoError(t, err)
 
 	files, err := extractFilesOrFail(tmpFolder)
 	require.NoError(t, err)
 	require.Empty(t, files, "incorrect files count")
 
-	for range 4 {
+	current := filepath.Join(tmpFolder, "0-current.log")
+	err = os.WriteFile(current, []byte("current"), os.ModePerm)
+	require.NoError(t, err)
+	for range 3 {
 		err = os.WriteFile(path.Join(tmpFolder, fmt.Sprintf("%d.%s", rand.Int31(), defaultFileExtension)), []byte("-"), os.ModePerm)
 		require.NoError(t, err)
 	}
 
-	err = verifyFiles(tmpFolder, 3)
+	err = verifyFiles(tmpFolder, 3, current)
 	require.NoError(t, err)
 
 	files, err = extractFilesOrFail(tmpFolder)
 	require.NoError(t, err)
 	require.Len(t, files, 3, "incorrect files count")
+	require.Contains(t, files, "0-current.log")
 }
 
 // testRotatingFileHandlerSeedFromDisk verifies that a handler constructed when a
