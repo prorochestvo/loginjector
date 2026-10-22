@@ -105,7 +105,8 @@ func NewRecoverHandler(
 			}
 			if rrw.committed {
 				// already flushed by beforeFlush; copy any trailers set after the flush.
-				copyTrailers(w.Header(), rrw.headers, rrw.snapshot)
+				realHeader := w.Header()
+				copyTrailers(realHeader, rrw.headers, rrw.snapshot)
 				return
 			}
 			if err := rrw.flushTo(w); err != nil {
@@ -199,51 +200,18 @@ func (rrw *recoverResponseWriter) WriteHeader(code int) {
 		return
 	}
 	if rrw.wroteHeader {
-		// already have a final status recorded.
 		if rrw.committed {
-			// after commit: forward to real writer (it will report the superfluous call).
+			// the real writer reports the superfluous call.
 			rrw.ResponseWriter.WriteHeader(code)
 		}
-		// before commit: silent no-op
 		return
 	}
-	// first final status: record it and snapshot the headers.
 	rrw.statusCode = code
 	rrw.wroteHeader = true
-	// snapshot the buffered headers at the moment the final status is committed.
 	if rrw.headers != nil {
 		rrw.snapshot = rrw.headers.Clone()
 	} else {
 		rrw.snapshot = make(http.Header)
-	}
-}
-
-// copyTrailers copies trailer headers from the live buffered map to the real map.
-// Trailer keys are those declared in snapshot["Trailer"] (comma-separated, trimmed,
-// canonicalised) and those with http.TrailerPrefix in the live buffered headers.
-func copyTrailers(realHeader, live, snapshot http.Header) {
-	if snapshot == nil {
-		return
-	}
-	// Get the declared trailer names from the snapshot
-	declared := snapshot.Get("Trailer")
-	trailerMap := make(map[string]struct{})
-	if declared != "" {
-		for _, name := range strings.Split(declared, ",") {
-			trailerMap[http.CanonicalHeaderKey(strings.TrimSpace(name))] = struct{}{}
-		}
-	}
-
-	// Copy trailers from the live map to the real map
-	for k, v := range live {
-		key := strings.TrimSpace(k)
-		if strings.HasPrefix(key, http.TrailerPrefix) {
-			// Copy with prefix intact so ResponseWriter recognizes it as a trailer
-			realHeader[key] = append([]string(nil), v...)
-		} else if _, isDeclared := trailerMap[http.CanonicalHeaderKey(key)]; isDeclared {
-			// Declared trailer: set with prefix so it's recognized as a trailer
-			realHeader[http.TrailerPrefix+key] = append([]string(nil), v...)
-		}
 	}
 }
 
@@ -255,10 +223,8 @@ func (rrw *recoverResponseWriter) Write(b []byte) (int, error) {
 		rrw.WriteHeader(http.StatusOK)
 	}
 	if rrw.committed {
-		// after commit: forward to real writer.
 		return rrw.ResponseWriter.Write(b)
 	}
-	// before commit: buffer the write.
 	return rrw.body.Write(b)
 }
 
@@ -273,27 +239,24 @@ func (rrw *recoverResponseWriter) beforeFlush() {
 	if rrw.hijacked || rrw.committed {
 		return
 	}
-	// commit the buffered response
+	realHeader := rrw.ResponseWriter.Header()
 	if rrw.wroteHeader {
-		// final status was recorded: write headers, status, and body to the real writer.
 		if rrw.snapshot != nil {
-			replaceHeader(rrw.ResponseWriter.Header(), rrw.snapshot)
+			replaceHeader(realHeader, rrw.snapshot)
 		}
 		rrw.ResponseWriter.WriteHeader(rrw.statusCode)
 	} else {
-		// no final status was recorded: the real writer sends an implicit 200 when
-		// the body write happens, so record that 200 and freeze the headers now.
+		// the real writer sends an implicit 200 on the body write, so record that
+		// 200 and freeze the headers now.
 		h := rrw.Header()
-		replaceHeader(rrw.ResponseWriter.Header(), h)
+		replaceHeader(realHeader, h)
 		rrw.statusCode = http.StatusOK
 		rrw.wroteHeader = true
 		rrw.snapshot = h.Clone()
 	}
-	// write the buffered body to the real writer.
-	_, _ = rrw.ResponseWriter.Write(rrw.body.Bytes())
-	// copy trailers that were set after the body write.
-	copyTrailers(rrw.ResponseWriter.Header(), rrw.headers, rrw.snapshot)
-	// reset the body buffer and mark as committed.
+	body := rrw.body.Bytes()
+	_, _ = rrw.ResponseWriter.Write(body)
+	copyTrailers(realHeader, rrw.headers, rrw.snapshot)
 	rrw.body.Reset()
 	rrw.committed = true
 }
@@ -306,22 +269,21 @@ func (rrw *recoverResponseWriter) beforeFlush() {
 // observable behaviour.
 func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
 	if rrw.committed {
-		// already flushed; nothing to do.
 		return nil
 	}
+	realHeader := w.Header()
 	if rrw.wroteHeader && rrw.snapshot != nil {
-		// final status was recorded: use the snapshot (which includes deletions).
-		replaceHeader(w.Header(), rrw.snapshot)
+		// the snapshot carries the handler's deletions.
+		replaceHeader(realHeader, rrw.snapshot)
 		w.WriteHeader(rrw.statusCode)
 	} else if rrw.headers != nil {
 		// no final status was recorded: the buffered map, deletions included, is the
 		// header set the handler saw.
-		replaceHeader(w.Header(), rrw.headers)
+		replaceHeader(realHeader, rrw.headers)
 	}
-	// write the buffered body.
-	_, err := w.Write(rrw.body.Bytes())
-	// copy trailers that were set after the body write.
-	copyTrailers(w.Header(), rrw.headers, rrw.snapshot)
+	body := rrw.body.Bytes()
+	_, err := w.Write(body)
+	copyTrailers(realHeader, rrw.headers, rrw.snapshot)
 	return err
 }
 
@@ -332,18 +294,46 @@ func (rrw *recoverResponseWriter) writeInformational(code int) {
 	realHeader := rrw.ResponseWriter.Header()
 	orig := realHeader.Clone()
 	defer replaceHeader(realHeader, orig)
-	replaceHeader(realHeader, rrw.Header())
+	buffered := rrw.Header()
+	replaceHeader(realHeader, buffered)
 	rrw.ResponseWriter.WriteHeader(code)
+}
+
+// copyTrailers copies trailer headers from the live buffered map to the real map.
+// Trailer keys are those declared in snapshot["Trailer"] (comma-separated, trimmed,
+// canonicalised) and those with http.TrailerPrefix in the live buffered headers.
+func copyTrailers(realHeader, live, snapshot http.Header) {
+	if snapshot == nil {
+		return
+	}
+	declared := snapshot.Get("Trailer")
+	trailerMap := make(map[string]struct{})
+	if declared != "" {
+		for _, name := range strings.Split(declared, ",") {
+			name = strings.TrimSpace(name)
+			trailerMap[http.CanonicalHeaderKey(name)] = struct{}{}
+		}
+	}
+
+	for k, v := range live {
+		key := strings.TrimSpace(k)
+		if strings.HasPrefix(key, http.TrailerPrefix) {
+			// keep the prefix so net/http sends the key as a trailer.
+			realHeader[key] = append([]string(nil), v...)
+		} else if _, isDeclared := trailerMap[http.CanonicalHeaderKey(key)]; isDeclared {
+			// a declared trailer gains the prefix so net/http sends it as a trailer.
+			realHeader[http.TrailerPrefix+key] = append([]string(nil), v...)
+		}
+	}
 }
 
 // replaceHeader clears dst and copies all headers from src to dst.
 func replaceHeader(dst, src http.Header) {
 	clear(dst)
 	for k, v := range src {
-		// make a copy of the slice so the caller's mutations don't affect us.
+		// copy the slice so later mutations of src do not leak into dst.
 		dst[k] = append([]string(nil), v...)
 	}
 }
 
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
-var _ tapWriter = (*recoverResponseWriter)(nil)

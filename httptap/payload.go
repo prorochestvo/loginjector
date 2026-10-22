@@ -20,7 +20,8 @@ type payloadConfig struct {
 	// the built-in sensitive set and may contain caller-supplied additions.
 	redactHeaders map[string]struct{}
 	// redactQueryParams holds lowercase parameter names to redact; always contains
-	// the built-in set (access_token, refresh_token, etc.) and may contain caller-supplied.
+	// the built-in set (access_token, refresh_token, etc.) and may contain caller-supplied
+	// additions.
 	redactQueryParams map[string]struct{}
 	// summaryWriter, when non-nil, overrides os.Stdout for the per-request summary line
 	// for this handler only.

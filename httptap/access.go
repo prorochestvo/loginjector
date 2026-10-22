@@ -60,7 +60,9 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 			}
 			_, _ = fmt.Fprintf(out, "%s [%03d] %s %s %0.3fms\n",
 				time.Now().UTC().Format(time.RFC3339Nano),
-				code, method, path,
+				code,
+				method,
+				path,
 				float64(elapsed)/1e6,
 			)
 		}()
@@ -113,7 +115,8 @@ func (a *accessResponseWriter) Write(b []byte) (int, error) {
 // connection has been hijacked so the field is available for future use.
 func (a *accessResponseWriter) markHijacked() { a.hijacked = true }
 
-// beforeFlush satisfies tapWriter for *accessResponseWriter.
+// beforeFlush records the implicit 200 that the real Flush commits when no
+// final status has been written yet.
 func (a *accessResponseWriter) beforeFlush() {
 	if a.hijacked {
 		return
@@ -126,4 +129,3 @@ func (a *accessResponseWriter) beforeFlush() {
 
 // compile-time interface assertions.
 var _ http.ResponseWriter = (*accessResponseWriter)(nil)
-var _ tapWriter = (*accessResponseWriter)(nil)

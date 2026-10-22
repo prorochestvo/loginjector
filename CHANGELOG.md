@@ -20,9 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   other parameters are byte-identical.
 - Payload headers: `X-Api-Key` and `X-Auth-Token` lines no longer appear in request or
   response dumps and cannot be re-enabled.
-- Access line, payload request line, and payload summary: control bytes and U+0085/U+2028/U+2029
-  in the path (and the payload query) are percent-encoded (`%0A`); other paths are
-  byte-identical.
+- Access line, payload request line, and payload summary: ASCII control bytes, C1 controls
+  (U+0080-U+009F), U+2028, U+2029, and invalid UTF-8 bytes in the path (and the payload query)
+  are percent-encoded per byte (`%0A`); other paths are byte-identical.
 - Payload response line shows the first final status (`201 Created` after
   `WriteHeader(201)`, `WriteHeader(500)`), not the last attempted one.
 - `NewAccessHandler` logs `[200]` for handlers that return without writing; `[000]`

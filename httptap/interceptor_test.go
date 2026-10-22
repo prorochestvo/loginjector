@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var _ http.ResponseWriter = (*interceptor)(nil)
+
 // TestBuildBodySnippet covers buildBodySnippet including the exact-boundary edge cases.
 func TestBuildBodySnippet(t *testing.T) {
 	t.Parallel()

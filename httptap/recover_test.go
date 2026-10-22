@@ -15,7 +15,6 @@ import (
 
 // compile-time assertions for recoverResponseWriter.
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
-var _ tapWriter = (*recoverResponseWriter)(nil)
 
 // newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
 func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
@@ -365,17 +364,15 @@ func TestNewRecoverHandler(t *testing.T) {
 				return
 			}
 			_, _, _ = hj.Hijack()
-			// After hijack, Flush should not call the real Flusher.
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
 			}
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
 
-		h(fc, httptest.NewRequest(http.MethodGet, "/", nil))
-
-		// After hijack, the flusher should not be called again.
-		// (This is validated implicitly: no panic)
+		require.NotPanics(t, func() {
+			h(fc, httptest.NewRequest(http.MethodGet, "/", nil))
+		}, "Flush after Hijack must not panic")
 	})
 
 	t.Run("nothing_handler_implicit_200", func(t *testing.T) {
@@ -637,8 +634,7 @@ func TestNewRecoverHandler(t *testing.T) {
 		slw := newStatusLogWriter()
 
 		next := func(w http.ResponseWriter, _ *http.Request) {
-			// Call WriteHeader with informational status without calling Header() first.
-			// This means rrw.headers is nil, so no buffered headers are applied.
+			// no Header() call first: the 1xx path clones the real headers itself.
 			w.WriteHeader(http.StatusEarlyHints)
 			_, _ = w.Write([]byte("body"))
 		}
@@ -647,8 +643,9 @@ func TestNewRecoverHandler(t *testing.T) {
 		slw.Header().Set("X-Outer", "1")
 		h(slw, httptest.NewRequest(http.MethodGet, "/", nil))
 
-		// The fake should have seen the informational status
 		require.Contains(t, slw.statusCodes, http.StatusEarlyHints)
+		require.Equal(t, "1", slw.headerSnapshots[0].Get("X-Outer"), "the 1xx must carry the real headers")
+		require.Equal(t, "1", slw.finalHeaders.Get("X-Outer"), "the final response must keep the real headers")
 	})
 
 	t.Run("informational_forwarded_immediately", func(t *testing.T) {

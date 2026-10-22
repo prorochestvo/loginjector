@@ -97,9 +97,7 @@ func (i *interceptor) Write(b []byte) (int, error) {
 		// zero in case interceptor is constructed in tests.
 		i.code = http.StatusOK
 	}
-	if !i.wroteHeader {
-		i.wroteHeader = true
-	}
+	i.wroteHeader = true
 
 	// buffer the response for logging, respecting the per-handler cap.
 	var bufErr error
@@ -155,7 +153,12 @@ func (i *interceptor) bytes(cfg payloadConfig) []byte {
 	if requestRawQuery != "" {
 		requestRawQuery = "?" + escapeControl(requestRawQuery)
 	}
-	requestHead := fmt.Sprintf("%s %s%s\n", i.request.Method, escapeControl(i.request.URL.Path), requestRawQuery)
+	requestHead := fmt.Sprintf(
+		"%s %s%s\n",
+		i.request.Method,
+		escapeControl(i.request.URL.Path),
+		requestRawQuery,
+	)
 	requestHeadersAsString := strings.TrimSpace(headerToStringWithRedact(&i.request.Header, cfg.redactHeaders))
 	responseHead := fmt.Sprintf("%s %d %s\n", i.request.Proto, i.code, http.StatusText(i.code))
 	responseHeaders := i.Header()
@@ -246,6 +249,3 @@ func (c *cappedWriter) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
-
-var _ http.ResponseWriter = (*interceptor)(nil)
-var _ tapWriter = (*interceptor)(nil)

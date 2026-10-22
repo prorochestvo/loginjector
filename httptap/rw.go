@@ -6,12 +6,6 @@ import (
 	"net/http"
 )
 
-// isInformational reports whether code is an HTTP informational status
-// (100-199) excluding 101 Switching Protocols, which is final in net/http.
-func isInformational(code int) bool {
-	return code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
-}
-
 // tapWriter is implemented by interceptor types that need to record when a
 // Hijack has happened so callers can suppress post-handler writes that assume
 // the ResponseWriter is still live (Flush in the payload handler; no-op in the
@@ -27,14 +21,13 @@ type tapWriter interface {
 // flag that the post-handler flush guard in NewPayloadHandlerWithOptions reads.
 func (i *interceptor) markHijacked() { i.hijacked = true }
 
-// beforeFlush satisfies tapWriter for *interceptor.
+// beforeFlush marks the final status as committed: the real Flush sends the
+// recorded status, or an implicit 200 when none was written.
 func (i *interceptor) beforeFlush() {
 	if i.hijacked {
 		return
 	}
-	if !i.wroteHeader {
-		i.wroteHeader = true
-	}
+	i.wroteHeader = true
 }
 
 // flusherRW wraps a tapWriter base and additionally satisfies http.Flusher.
@@ -199,4 +192,10 @@ func wrapWithOptionalInterfaces(base tapWriter, w http.ResponseWriter) http.Resp
 	default:
 		return base
 	}
+}
+
+// isInformational reports whether code is an HTTP informational status
+// (100-199) excluding 101 Switching Protocols, which is final in net/http.
+func isInformational(code int) bool {
+	return code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
 }

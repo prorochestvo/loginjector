@@ -13,6 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// compile-time checks that each tap writer satisfies tapWriter.
+var _ tapWriter = (*accessResponseWriter)(nil)
+var _ tapWriter = (*interceptor)(nil)
+var _ tapWriter = (*recoverResponseWriter)(nil)
+
 // compile-time checks that each concrete wrapper satisfies its claimed interfaces.
 var _ http.ResponseWriter = &flusherRW{}
 var _ http.Flusher = &flusherRW{}

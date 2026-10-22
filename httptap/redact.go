@@ -31,11 +31,12 @@ var defaultRedactQueryParams = map[string]struct{}{
 	"password":      {},
 }
 
-// redactKey normalizes a header name for redaction set matching: lowercase,
-// then trimmed of whitespace. This ensures case-insensitive matching even
-// when headers are written directly into the map with non-canonical keys.
+// redactKey normalizes a header or query parameter name for redaction set
+// matching: trimmed of whitespace, then lowercased. Header keys written
+// directly into the map with non-canonical spelling still match.
 func redactKey(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
+	name = strings.TrimSpace(name)
+	return strings.ToLower(name)
 }
 
 // headerToStringWithRedact converts an http.Header map to a multi-line string,
@@ -73,37 +74,29 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 		return raw
 	}
 
-	// First pass: check if any parameters need redaction to avoid allocating
-	// when there's no match.
+	// the first pass looks for a match so a query without one is returned without allocating.
 	hasMatch := false
 	i := 0
 	for i < len(raw) {
-		// Find the next delimiter (&, ;)
 		nextDelim := len(raw)
-		for j := i; j < len(raw); j++ {
-			if raw[j] == '&' || raw[j] == ';' {
-				nextDelim = j
-				break
-			}
+		if k := strings.IndexAny(raw[i:], "&;"); k >= 0 {
+			nextDelim = i + k
 		}
 
 		segment := raw[i:nextDelim]
 		eqIdx := strings.Index(segment, "=")
 		if eqIdx >= 0 {
 			name := segment[:eqIdx]
-			// Percent-decode the name for matching
 			decodedName, err := url.QueryUnescape(name)
 			if err != nil {
 				decodedName = name
 			}
-			// Check if this parameter should be redacted (case-insensitive)
 			if _, redact := names[redactKey(decodedName)]; redact {
 				hasMatch = true
 				break
 			}
 		}
 
-		// Move to the next segment
 		if nextDelim < len(raw) {
 			i = nextDelim + 1
 		} else {
@@ -111,50 +104,36 @@ func redactRawQuery(raw string, names map[string]struct{}) string {
 		}
 	}
 
-	// If no match, return the raw query unchanged.
 	if !hasMatch {
 		return raw
 	}
 
-	// Second pass: build the result with redactions.
 	var result strings.Builder
 	i = 0
 	for i < len(raw) {
-		// Find the next delimiter (&, ;)
 		nextDelim := len(raw)
-		for j := i; j < len(raw); j++ {
-			if raw[j] == '&' || raw[j] == ';' {
-				nextDelim = j
-				break
-			}
+		if k := strings.IndexAny(raw[i:], "&;"); k >= 0 {
+			nextDelim = i + k
 		}
 
 		segment := raw[i:nextDelim]
-
-		// Split segment on '=' to get name and value
 		eqIdx := strings.Index(segment, "=")
 		if eqIdx < 0 {
-			// No value in this segment, keep it as-is
 			result.WriteString(segment)
 		} else {
 			name := segment[:eqIdx]
-			// Percent-decode the name for matching
 			decodedName, err := url.QueryUnescape(name)
 			if err != nil {
 				decodedName = name
 			}
-			// Check if this parameter should be redacted (case-insensitive)
 			if _, redact := names[redactKey(decodedName)]; redact {
-				// Write the raw name and the redaction marker
 				result.WriteString(name)
 				result.WriteString("=[REDACTED]")
 			} else {
-				// Keep the segment as-is
 				result.WriteString(segment)
 			}
 		}
 
-		// Move to the next segment
 		if nextDelim < len(raw) {
 			result.WriteByte(raw[nextDelim])
 			i = nextDelim + 1

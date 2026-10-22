@@ -1,15 +1,15 @@
 package httptap
 
 import (
-	"bytes"
+	"strings"
 	"unicode/utf8"
 )
 
-// escapeControl percent-encodes control characters in the input string.
-// Control characters include: bytes 0x00–0x1F, 0x7F, 0x80–0x9F; Unicode
-// runes U+0085, U+2028, U+2029. Returns the original string unchanged if
-// none are present; otherwise returns a new string with each control byte
-// encoded as %XX (uppercase hex), one %XX per byte.
+// escapeControl percent-encodes, one uppercase %XX per byte, every ASCII
+// control byte (0x00-0x1F, 0x7F), every C1 control rune (U+0080-U+009F),
+// U+2028, U+2029, and every byte that is not part of valid UTF-8. Other
+// input, including valid non-control UTF-8, is kept as-is; a string with
+// nothing to escape is returned unchanged without allocating.
 func escapeControl(s string) string {
 	var hasControl bool
 	for i := 0; i < len(s); i++ {
@@ -18,11 +18,9 @@ func escapeControl(s string) string {
 			hasControl = true
 			break
 		}
-		// Check for multibyte UTF-8 that might be a control rune
 		if b >= 0x80 {
 			r, size := utf8.DecodeRuneInString(s[i:])
 			if r == utf8.RuneError && size == 1 {
-				// Invalid UTF-8 (lone byte >= 0x80): escape the byte
 				hasControl = true
 				break
 			}
@@ -30,7 +28,7 @@ func escapeControl(s string) string {
 				hasControl = true
 				break
 			}
-			i += size - 1 // Skip to end of this rune
+			i += size - 1
 		}
 	}
 
@@ -38,30 +36,26 @@ func escapeControl(s string) string {
 		return s
 	}
 
-	// Build the escaped version
-	var buf bytes.Buffer
+	buf := new(strings.Builder)
 	i := 0
 	for i < len(s) {
 		b := s[i]
 		switch {
 		case isControlByte(b):
-			buf.WriteString(byteToPercent(b))
+			writePercent(buf, b)
 			i++
 		case b >= 0x80:
 			r, size := utf8.DecodeRuneInString(s[i:])
 			switch {
 			case r == utf8.RuneError && size == 1:
-				// Invalid UTF-8: escape the lone byte
-				buf.WriteString(byteToPercent(b))
+				writePercent(buf, b)
 				i++
 			case isControlRune(r):
-				// Encode each byte of the UTF-8 sequence as %XX
 				for j := range size {
-					buf.WriteString(byteToPercent(s[i+j]))
+					writePercent(buf, s[i+j])
 				}
 				i += size
 			default:
-				// Valid non-control UTF-8: keep as-is
 				buf.WriteString(s[i : i+size])
 				i += size
 			}
@@ -86,8 +80,10 @@ func isControlRune(r rune) bool {
 	return (r >= 0x80 && r <= 0x9F) || r == 0x2028 || r == 0x2029
 }
 
-// byteToPercent converts a single byte to percent-encoded form (%XX, uppercase).
-func byteToPercent(b byte) string {
+// writePercent appends b to buf in percent-encoded form (%XX, uppercase hex).
+func writePercent(buf *strings.Builder, b byte) {
 	const hex = "0123456789ABCDEF"
-	return "%" + string(hex[b>>4]) + string(hex[b&0x0F])
+	buf.WriteByte('%')
+	buf.WriteByte(hex[b>>4])
+	buf.WriteByte(hex[b&0x0F])
 }
