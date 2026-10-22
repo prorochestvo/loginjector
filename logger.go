@@ -123,7 +123,7 @@ func (l *Logger) Unhook(id HookID) {
 	l.m.Lock()
 	defer l.m.Unlock()
 
-	items := make([]*hook, 0, len(l.hooks)-1)
+	items := make([]*hook, 0, len(l.hooks))
 
 	for _, h := range l.hooks {
 		if h.ID != id {
@@ -266,7 +266,10 @@ func (l *Logger) Panic(level LogLevel, args ...any) {
 
 // Write writes a log message with the minimum log level.
 func (l *Logger) Write(message []byte) (int, error) {
-	return l.WriteLog(l.minimumLogLevel, message)
+	l.m.RLock()
+	level := l.minimumLogLevel
+	l.m.RUnlock()
+	return l.WriteLog(level, message)
 }
 
 // WriterAs returns a writer that writes to the logger as the given log level.

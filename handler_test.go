@@ -77,6 +77,28 @@ func TestTelegramHandler(t *testing.T) {
 
 func TestRotatingFileHandler(t *testing.T) {
 	t.Parallel()
+	t.Run("prunes only its own prefix files", func(t *testing.T) {
+		t.Parallel()
+		tmpFolder := t.TempDir()
+		foreign := filepath.Join(tmpFolder, "aaa-foreign.log")
+		require.NoError(t, os.WriteFile(foreign, []byte("foreign"), 0o640))
+
+		other := RotatingFileHandler(tmpFolder, "aaa", WithMaxFileSize(1024), WithMaxFiles(2))
+		_, err := other.Write([]byte("other"))
+		require.NoError(t, err)
+
+		h := RotatingFileHandler(tmpFolder, "zzz", WithMaxFileSize(4), WithMaxFiles(2))
+		for range 6 {
+			_, err = h.Write([]byte("0123456789"))
+			require.NoError(t, err)
+		}
+
+		require.FileExists(t, foreign, "foreign .log file must survive rotation")
+		require.FileExists(t, filepath.Join(tmpFolder, rotatingFileName("aaa", 1)), "another prefix's live file must survive rotation")
+		own, err := filepath.Glob(filepath.Join(tmpFolder, "zzz.*.log"))
+		require.NoError(t, err)
+		require.Len(t, own, 2, "own files must be pruned to the max-files bound")
+	})
 	t.Run("appends and rotates", func(t *testing.T) {
 		t.Parallel()
 		tmpFolder := t.TempDir()

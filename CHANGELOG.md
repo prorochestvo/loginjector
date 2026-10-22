@@ -20,6 +20,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `RotatingFileHandler` without options pruned every `*.log` file in its folder, whatever
+  its name, when the file count exceeded `WithMaxFiles` — deleting log files of other
+  components and the live file of another handler sharing the folder (including
+  `NewFileLogger`, which always takes this path). Pruning now counts and removes only the
+  handler's own `prefix.<8 hex>.log` files. `FileByFormatHandler` keeps whole-folder
+  pruning by contract; its godoc now says so.
+- `Logger.Unhook` panicked (`makeslice: cap out of range`) on a logger with no hooks, e.g.
+  when the same hook was removed twice.
+- `Logger.Write` read the minimum level without the lock, a data race with a concurrent
+  `SetMinLevel`.
 - `TestRotatingFileHandlerForRaceCondition` joined errors from several goroutines without a
   lock, and `TestFileByFormatHandlerForRaceCondition` called `require` off the test
   goroutine; both are corrected. `TestLogger_Write` now restores the std `log` output.

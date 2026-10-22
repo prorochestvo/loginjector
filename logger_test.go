@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -173,6 +174,32 @@ func TestLogger_Unhook(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, m, n, "method returned an unexpected length")
 	require.Empty(t, b.String(), "unexpected message")
+
+	require.NotPanics(t, func() { l.Unhook(hookID) }, "unhooking twice must be a no-op")
+	require.NotPanics(t, func() { NewLogger(logLevelInfo, io.Discard).Unhook(hookID) }, "unhooking a logger without hooks must be a no-op")
+}
+
+func TestLogger_WriteForRaceCondition(t *testing.T) {
+	t.Parallel()
+	l := NewLogger(logLevelInfo, io.Discard)
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				if i%2 == 0 {
+					l.SetMinLevel(logLevelWarning)
+					l.SetMinLevel(logLevelInfo)
+				} else {
+					_, err := l.Write([]byte("message"))
+					assert.NoError(t, err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestLogger_WriteLog(t *testing.T) {
