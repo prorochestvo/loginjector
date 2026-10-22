@@ -2,10 +2,10 @@ SHELL := /bin/bash
 
 GOLANGCI_VERSION ?= v2.15.0
 
-.PHONY: verify fmt-check tidy-check vet build lint lint-selftest lint-install test format tidy
+.PHONY: verify fmt-check tidy-check vet vet-windows build lint lint-selftest lint-install test format tidy
 
 ## verify: every check; the project gate and the CI entry point
-verify: fmt-check tidy-check vet build lint lint-selftest test
+verify: fmt-check tidy-check vet vet-windows build lint lint-selftest test
 
 ## fmt-check: fail and print unformatted Go files
 fmt-check:
@@ -18,6 +18,10 @@ tidy-check:
 ## vet: vet the packages without cgo
 vet:
 	CGO_ENABLED=0 go vet ./...
+
+## vet-windows: vet the packages for Windows to keep the tree cross-platform
+vet-windows:
+	GOOS=windows CGO_ENABLED=0 go vet ./...
 
 ## build: prove the packages build without cgo
 build:
