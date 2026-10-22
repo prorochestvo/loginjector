@@ -49,21 +49,20 @@ func escapeControl(s string) string {
 			i++
 		case b >= 0x80:
 			r, size := utf8.DecodeRuneInString(s[i:])
-			if r == utf8.RuneError && size == 1 {
+			switch {
+			case r == utf8.RuneError && size == 1:
 				// Invalid UTF-8: escape the lone byte
 				buf.WriteString(byteToPercent(b))
 				i++
-			} else if isControlRune(r) {
+			case isControlRune(r):
 				// Encode each byte of the UTF-8 sequence as %XX
 				for j := range size {
 					buf.WriteString(byteToPercent(s[i+j]))
 				}
 				i += size
-			} else {
+			default:
 				// Valid non-control UTF-8: keep as-is
-				for j := range size {
-					buf.WriteByte(s[i+j])
-				}
+				buf.WriteString(s[i : i+size])
 				i += size
 			}
 		default:
