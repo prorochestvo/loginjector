@@ -161,7 +161,7 @@ linters:
   exclusions:
     generated: lax
     rules:
-      # Test files: relax the doc and structure rules, keep the correctness ones.
+      # Test files: relax the doc, structure, errcheck and type-assertion rules.
       - path: _test\.go
         linters:
           - godot

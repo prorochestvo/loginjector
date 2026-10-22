@@ -30,7 +30,7 @@
 //	    myHandler,
 //	    httptap.WithMaxRequestBody(4096),
 //	    httptap.WithMaxResponseBody(4096),
-//	    httptap.WithRedactHeaders("X-Api-Key"),
+//	    httptap.WithRedactHeaders("X-Request-Signature"),
 //	    httptap.WithSummaryWriter(io.Discard),
 //	)
 //	http.HandleFunc("/api", logged)

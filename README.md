@@ -29,7 +29,7 @@ rotation, and alerts.
 go get github.com/prorochestvo/loginjector
 ```
 
-Requires Go 1.22+.
+Requires Go 1.22.2+.
 
 ## Quick start
 

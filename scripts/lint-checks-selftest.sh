@@ -18,13 +18,16 @@ EOF_DIRS
 trap cleanup EXIT
 
 id="2610""22.0011"
+bl="2610""22.L.0009"
 legacy="plans/0""10-foo.md"
 pl="PLA""N-1"
 tk="task ""#1"
 divider="// ""----"" helpers ""----"
 failures=0
+cases=0
 
 run_case() {
+	cases=$((cases + 1))
 	name=$1
 	expected=$2
 	header=$3
@@ -48,16 +51,19 @@ run_case 'section divider' 1 'section-divider comments' divider.go "$divider"
 run_case 'plan id in Go comment' 1 'plan or task references' reference.go "// see .agents/plans/$id.x.md"
 run_case 'plan id in Makefile comment' 1 'plan or task references' Makefile "# see $id"
 run_case 'plan id in YAML' 1 'plan or task references' config.yml "# see $id"
+run_case 'backlog id' 1 'plan or task references' notes.md "see $bl"
 run_case 'legacy plan reference' 1 'plan or task references' notes.md "see $legacy"
 run_case 'PLAN reference' 1 'plan or task references' reference.go "// $pl"
 run_case 'task reference' 1 'plan or task references' reference.go "// $tk"
 run_case 'backlog exemption' 0 '' .agents/plans/backlog/x.md "see $id"
 run_case 'agent memory exemption' 0 '' .claude/agent-memory/m.md "see $id"
 run_case 'version and date' 0 '' notes.md 'v1.0.10 released 2026-10-22'
+run_case 'longer digit runs' 0 '' notes.md 'build 1'"$id"' and '"$id"'0 and v1.'"$id"
+run_case 'letter prefix' 0 '' notes.md "abc$id"
 run_case 'mock without assertion' 1 'no compile-time interface assertion' mock_test.go 'type mockSink struct{}'
 run_case 'mock with assertion' 0 '' mock_test.go $'type mockSink struct{}\nvar _ io.Writer = (*mockSink)(nil)'
 
 if [ "$failures" -ne 0 ]; then
 	exit 1
 fi
-printf 'All 13 lint-check cases passed.\n'
+printf 'All %s lint-check cases passed.\n' "$cases"

@@ -7,10 +7,8 @@ there is no binary, database, or server.
 ## Commands
 
 - `make test` — race suite (`CGO_ENABLED=1`; on Linux `-race` needs cgo and a C compiler).
-- `make verify` — every check: gofmt, `go mod tidy -diff`, vet (also for `GOOS=windows`),
-  no-cgo build, golangci-lint plus `scripts/lint-checks.sh` and its self-test, then
-  `make test`. The golangci-lint pin is `GOLANGCI_VERSION` in `Makefile`;
-  `make lint-install` installs it.
+- `make verify` — every check; the list is the `verify` prerequisites in `Makefile`. The
+  golangci-lint pin is `GOLANGCI_VERSION` in `Makefile`; `make lint-install` installs it.
 - `make format` / `make tidy` rewrite files; no other target does.
 - CI: `.github/workflows/ci.yml` runs `make verify`, and `make test` and `make build` on the
   `go.mod` floor.
@@ -31,7 +29,10 @@ there is no binary, database, or server.
 ## Tripwires
 
 - Go conventions come from the `stack-go` skills and the owner's R# rules; declaration
-  order is R16 (type, its constructor, methods), enforced by `funcorder`.
+  order is R16; `funcorder` enforces only constructor and method placement.
+- Local `make verify` runs on the current toolchain and does not catch standard-library
+  APIs newer than the `go.mod` floor (1.22.2); CI's floor job does. It cannot be
+  reproduced locally: Go 1.22.2 test binaries abort on macOS 27.
 - `LogLevel` is a bare `int`; the root package defines no level constants. Higher is more
   severe.
 - Hooks fire on an exact level match even below the minimum level. A handler fires at

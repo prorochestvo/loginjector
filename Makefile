@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-GOLANGCI_VERSION ?= v2.15.0
+GOLANGCI_VERSION := v2.15.0
 
 .PHONY: verify fmt-check tidy-check vet vet-windows build lint lint-selftest lint-install test format tidy
 
@@ -9,7 +9,7 @@ verify: fmt-check tidy-check vet vet-windows build lint lint-selftest test
 
 ## fmt-check: fail and print unformatted Go files
 fmt-check:
-	@files="$$(gofmt -l .)"; if [[ -n "$$files" ]]; then printf '%s\n' "$$files" >&2; exit 1; fi
+	@files="$$(gofmt -l $$(git ls-files '*.go'))" || exit 1; if [[ -n "$$files" ]]; then printf '%s\n' "$$files" >&2; exit 1; fi
 
 ## tidy-check: verify go.mod and go.sum are tidy
 tidy-check:
@@ -40,7 +40,7 @@ lint-selftest:
 
 ## lint-install: install the pinned golangci-lint version
 lint-install:
-	curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" $(GOLANGCI_VERSION)
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_VERSION)/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" $(GOLANGCI_VERSION)
 
 ## test: the suite under the race detector (race needs cgo on Linux)
 test:
