@@ -1,14 +1,20 @@
 package loginjector
 
 import (
+	"bufio"
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/prorochestvo/loginjector/internal/synctest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,33 +28,201 @@ const (
 
 //nolint:paralleltest // captureStdout redirects the process-global os.Stdout
 func TestNewLogger(t *testing.T) {
-	l := NewLogger(logLevelDebug)
-	require.NotNil(t, l)
-	require.Equal(t, logLevelDebug, l.minimumLogLevel)
-	require.Empty(t, l.hooks, "unexpected hooks count")
-	require.Len(t, l.handlers, 1, "unexpected handlers count")
+	t.Run("default handler writes timestamped lines to stdout", func(t *testing.T) {
+		l := NewLogger(logLevelDebug)
+		require.NotNil(t, l)
+		require.Equal(t, logLevelDebug, l.minimumLogLevel)
+		require.Empty(t, l.hooks, "unexpected hooks count")
+		require.Len(
+			t,
+			l.handlers,
+			1,
+			"unexpected handlers count",
+		)
 
-	// the default handler is a TimestampedPrintHandler on stdout: a write at/above
-	// the minimum level must produce a timestamped line on stdout.
-	m := uniqueToken()
-	out := captureStdout(t, func() {
-		ld := NewLogger(logLevelInfo)
-		_, err := ld.WriteLog(logLevelInfo, []byte(m))
-		require.NoError(t, err)
+		// the default handler is a TimestampedPrintHandler on stdout: a write at/above
+		// the minimum level must produce a timestamped line on stdout.
+		m := uniqueToken()
+		out := captureStdout(t, func() {
+			ld := NewLogger(logLevelInfo)
+			_, err := ld.WriteLog(logLevelInfo, []byte(m))
+			require.NoError(t, err)
+		})
+		require.Contains(
+			t,
+			out,
+			m,
+			"default sink must write to stdout",
+		)
+		require.Regexp(
+			t,
+			`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `,
+			out,
+			"default sink must prepend a timestamp",
+		)
 	})
-	require.Contains(t, out, m, "default sink must write to stdout")
-	require.Regexp(t, `^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} `, out,
-		"default sink must prepend a timestamp")
+
+	t.Run("non-pointer sink is not deduplicated and does not panic", func(t *testing.T) {
+		var l *Logger
+		require.NotPanics(t, func() {
+			l = NewLogger(
+				logLevelInfo,
+				valueWriter{id: 1},
+				valueWriter{id: 1},
+				sliceWriter{lines: []string{"a"}},
+				sliceWriter{lines: []string{"a"}},
+			)
+		})
+		require.Len(t, l.handlers, 4)
+		require.Empty(t, l.sinkLocks, "value-type sinks must not enter the shared-lock registry")
+		require.NotPanics(t, func() {
+			_, err := l.WriteLog(logLevelInfo, []byte(uniqueToken()))
+			require.NoError(t, err)
+		})
+	})
+
+	t.Run("WithMinLevel of a nil writer registers without panic", func(t *testing.T) {
+		require.NotPanics(t, func() {
+			NewLogger(
+				logLevelInfo,
+				WithMinLevel(logLevelSevere, nil),
+			)
+		})
+	})
+}
+
+func TestNewLoggerForRaceCondition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("same buffer twice", func(t *testing.T) {
+		t.Parallel()
+		buf := bytes.NewBufferString("")
+		l := NewLogger(logLevelInfo, buf, buf)
+
+		const goroutines = 16
+		const iterations = 200
+		var wg sync.WaitGroup
+		for i := range goroutines {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := range iterations {
+					msg := fmt.Sprintf("msg-%d-%d\n", i, j)
+					_, _ = l.WriteLog(logLevelInfo, []byte(msg))
+				}
+			}()
+		}
+		wg.Wait()
+
+		// each registration writes once per message: 2 registrations × 16 goroutines × 200 iterations.
+		expectedLines := 2 * goroutines * iterations
+		actualLines := strings.Count(
+			buf.String(),
+			"\n",
+		)
+		require.Equal(
+			t,
+			expectedLines,
+			actualLines,
+			"same buffer registered twice must write twice per message",
+		)
+	})
+
+	t.Run("buffer and WithMinLevel of the same buffer", func(t *testing.T) {
+		t.Parallel()
+		buf := bytes.NewBufferString("")
+		l := NewLogger(
+			logLevelInfo,
+			buf,
+			WithMinLevel(logLevelInfo, buf),
+		)
+
+		const goroutines = 16
+		const iterations = 200
+		var wg sync.WaitGroup
+		for i := range goroutines {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := range iterations {
+					msg := fmt.Sprintf("msg-%d-%d\n", i, j)
+					_, _ = l.WriteLog(logLevelInfo, []byte(msg))
+				}
+			}()
+		}
+		wg.Wait()
+
+		// each registration writes once per message: 2 registrations × 16 goroutines × 200 iterations.
+		expectedLines := 2 * goroutines * iterations
+		actualLines := strings.Count(
+			buf.String(),
+			"\n",
+		)
+		require.Equal(
+			t,
+			expectedLines,
+			actualLines,
+			"same buffer via WithMinLevel must write twice per message",
+		)
+	})
 }
 
 func TestLogger_SetMinLevel(t *testing.T) {
 	t.Parallel()
-	l := NewLogger(logLevelDebug)
-	require.NotNil(t, l)
-	require.NotEqual(t, logLevelInfo, l.minimumLogLevel)
 
-	l.SetMinLevel(logLevelInfo)
-	require.Equal(t, logLevelInfo, l.minimumLogLevel)
+	t.Run("sets the minimum level", func(t *testing.T) {
+		t.Parallel()
+		l := NewLogger(logLevelDebug)
+		require.NotNil(t, l)
+		require.NotEqual(t, logLevelInfo, l.minimumLogLevel)
+
+		l.SetMinLevel(logLevelInfo)
+		require.Equal(t, logLevelInfo, l.minimumLogLevel)
+	})
+
+	t.Run("does not wait for a blocked sink", func(t *testing.T) {
+		t.Parallel()
+		a, b := &bytes.Buffer{}, &bytes.Buffer{}
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var enterOnce sync.Once
+		l := NewLogger(
+			reentryMin,
+			WithMinLevel(
+				reentryHigh,
+				writerFunc(func(p []byte) (int, error) {
+					enterOnce.Do(func() { close(entered) })
+					<-release
+					return a.Write(p)
+				}),
+			),
+		)
+		l.Hook(b, reentryLow)
+
+		blocked := runAsync(func() { _, _ = l.WriteLog(reentryHigh, []byte(uniqueToken())) })
+		t.Cleanup(func() {
+			close(release)
+			if !closedWithin(blocked) {
+				t.Error("parked WriteLog did not return after release")
+			}
+		})
+		if !closedWithin(entered) {
+			t.Fatal("sink A was never entered")
+		}
+
+		if !closedWithin(runAsync(func() { l.SetMinLevel(reentryNewMin) })) {
+			t.Fatal("SetMinLevel waited for a blocked sink")
+		}
+		m := uniqueToken()
+		if !closedWithin(runAsync(func() { _, _ = l.WriteLog(reentryLow, []byte(m)) })) {
+			t.Fatal("WriteLog queued behind a blocked sink")
+		}
+		require.Contains(
+			t,
+			b.String(),
+			m,
+		)
+	})
 }
 
 func TestLogger_Hook(t *testing.T) {
@@ -137,6 +311,104 @@ func TestLogger_Hook(t *testing.T) {
 
 		require.Len(t, ids, n, "each concurrent Hook call must return a distinct ID")
 	})
+
+	t.Run("zero-value logger", func(t *testing.T) {
+		t.Parallel()
+		var l Logger
+		buf := &bytes.Buffer{}
+
+		require.NotPanics(t, func() { l.Hook(buf, logLevelInfo) })
+		require.Len(t, l.hooks, 1)
+
+		m := uniqueToken()
+		_, err := l.WriteLog(logLevelInfo, []byte(m))
+		require.NoError(t, err)
+		require.Contains(
+			t,
+			buf.String(),
+			m,
+		)
+	})
+
+	t.Run("handler registering a hook from its Write does not deadlock", func(t *testing.T) {
+		t.Parallel()
+		a, b, c := &bytes.Buffer{}, &bytes.Buffer{}, &bytes.Buffer{}
+		var (
+			l    *Logger
+			once sync.Once
+		)
+		l = NewLogger(
+			reentryMin,
+			WithMinLevel(
+				reentryHigh,
+				writerFunc(func(p []byte) (int, error) {
+					once.Do(func() { l.Hook(c, reentryLow) })
+					return a.Write(p)
+				}),
+			),
+		)
+		l.Hook(b, reentryLow)
+
+		m := uniqueToken()
+		if !closedWithin(runAsync(func() { _, _ = l.WriteLog(reentryHigh, []byte(m)) })) {
+			t.Fatal("WriteLog deadlocked: handler called Hook from its Write")
+		}
+		require.Contains(
+			t,
+			a.String(),
+			m,
+		)
+
+		m2 := uniqueToken()
+		_, err := l.WriteLog(reentryLow, []byte(m2))
+		require.NoError(t, err)
+		require.Contains(
+			t,
+			c.String(),
+			m2,
+			"hook registered from a sink must receive later messages",
+		)
+		require.Contains(
+			t,
+			b.String(),
+			m2,
+		)
+	})
+}
+
+func TestLogger_HookForRaceCondition(t *testing.T) {
+	t.Parallel()
+	buf := bytes.NewBufferString("")
+	l := NewLogger(logLevelInfo, buf)
+	l.Hook(buf, logLevelInfo)
+
+	const goroutines = 16
+	const iterations = 200
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range iterations {
+				msg := fmt.Sprintf("msg-%d-%d\n", i, j)
+				_, _ = l.WriteLog(logLevelInfo, []byte(msg))
+			}
+		}()
+	}
+	wg.Wait()
+
+	// each registration writes once per message: 2 registrations × 16 goroutines × 200 iterations.
+	expectedLines := 2 * goroutines * iterations
+	actualLines := strings.Count(
+		buf.String(),
+		"\n",
+	)
+	require.Equal(
+		t,
+		expectedLines,
+		actualLines,
+		"same buffer as handler and hook must write twice per message",
+	)
 }
 
 // TestLogger_HookBelowMinimum verifies the hook-fires-below-minimum asymmetry: a hook
@@ -155,28 +427,239 @@ func TestLogger_HookBelowMinimum(t *testing.T) {
 	require.Equal(t, 0, n, "below-minimum write must report n=0")
 	require.Contains(t, b.String(), m, "hook must fire even below the minimum level")
 }
+func TestLogger_StdLog(t *testing.T) {
+	t.Parallel()
+
+	t.Run("prefix and level routing", func(t *testing.T) {
+		t.Parallel()
+
+		b := &bytes.Buffer{}
+		l := NewLogger(logLevelInfo, b)
+
+		dbLog := l.StdLog(logLevelWarning, "sqlite ")
+		dbLog.Printf("x")
+
+		// Lmsgprefix places the prefix immediately before the message with no
+		// leading date/time from the std logger; the sink here adds no timestamp.
+		require.Equal(
+			t,
+			"sqlite x\n",
+			b.String(),
+		)
+	})
+
+	t.Run("below level is gated", func(t *testing.T) {
+		t.Parallel()
+
+		b := &bytes.Buffer{}
+		l := NewLogger(logLevelInfo, b) // minimum is Info
+
+		dbLog := l.StdLog(logLevelDebug, "db ") // Debug is below Info
+		dbLog.Printf("dropped")
+
+		require.Empty(
+			t,
+			b.String(),
+			"a StdLog below the minimum level must be gated out",
+		)
+	})
+
+	t.Run("no doubled timestamp when paired with TimestampedHandler sink", func(t *testing.T) {
+		t.Parallel()
+
+		fixed := time.Date(
+			2024,
+			3,
+			15,
+			10,
+			30,
+			45,
+			0,
+			time.UTC,
+		)
+		inner := &bytes.Buffer{}
+		sink := TimestampedHandler(
+			inner,
+			withClock(func() time.Time { return fixed }),
+		)
+		l := NewLogger(logLevelInfo, sink)
+
+		dbLog := l.StdLog(logLevelInfo, "sqlite ")
+		dbLog.Printf("query ran")
+
+		// exactly one timestamp: the sink stamps, the std logger uses Lmsgprefix only.
+		out := inner.String()
+		require.Equal(t, "2024/03/15 10:30:45 sqlite query ran\n", out)
+		require.Equal(
+			t,
+			1,
+			strings.Count(out, "2024/03/15 10:30:45"),
+			"line must carry exactly one timestamp",
+		)
+	})
+}
 
 func TestLogger_Unhook(t *testing.T) {
 	t.Parallel()
-	m := uniqueToken()
-	b := bytes.NewBufferString("")
-	l := NewLogger(logLevelInfo, io.Discard)
-	require.NotNil(t, l)
 
-	// Warning, Severe, Severe dedupes to two distinct hook entries sharing one ID.
-	hookID := l.Hook(b, logLevelWarning, logLevelSevere, logLevelSevere)
-	require.Len(t, l.hooks, 2, "unexpected number of hooks")
+	t.Run("removes every level of the hook", func(t *testing.T) {
+		t.Parallel()
+		m := uniqueToken()
+		b := bytes.NewBufferString("")
+		l := NewLogger(logLevelInfo, io.Discard)
+		require.NotNil(t, l)
 
-	l.Unhook(hookID)
-	require.Empty(t, l.hooks, "unexpected number of hooks")
+		// Warning, Severe, Severe dedupes to two distinct hook entries sharing one ID.
+		hookID := l.Hook(
+			b,
+			logLevelWarning,
+			logLevelSevere,
+			logLevelSevere,
+		)
+		require.Len(
+			t,
+			l.hooks,
+			2,
+			"unexpected number of hooks",
+		)
 
-	n, err := l.WriteLog(logLevelWarning, []byte(m))
-	require.NoError(t, err)
-	require.Len(t, m, n, "method returned an unexpected length")
-	require.Empty(t, b.String(), "unexpected message")
+		l.Unhook(hookID)
+		require.Empty(t, l.hooks, "unexpected number of hooks")
 
-	require.NotPanics(t, func() { l.Unhook(hookID) }, "unhooking twice must be a no-op")
-	require.NotPanics(t, func() { NewLogger(logLevelInfo, io.Discard).Unhook(hookID) }, "unhooking a logger without hooks must be a no-op")
+		n, err := l.WriteLog(logLevelWarning, []byte(m))
+		require.NoError(t, err)
+		require.Len(
+			t,
+			m,
+			n,
+			"method returned an unexpected length",
+		)
+		require.Empty(
+			t,
+			b.String(),
+			"unexpected message",
+		)
+
+		require.NotPanics(t, func() { l.Unhook(hookID) }, "unhooking twice must be a no-op")
+		require.NotPanics(t, func() { NewLogger(logLevelInfo, io.Discard).Unhook(hookID) }, "unhooking a logger without hooks must be a no-op")
+	})
+
+	t.Run("hook calling Unhook from its Write does not deadlock", func(t *testing.T) {
+		t.Parallel()
+		a, b := &bytes.Buffer{}, &bytes.Buffer{}
+		l := NewLogger(
+			reentryMin,
+			WithMinLevel(reentryHigh, a),
+		)
+		var (
+			id   HookID
+			once sync.Once
+		)
+		id = l.Hook(
+			writerFunc(func(p []byte) (int, error) {
+				once.Do(func() { l.Unhook(id) })
+				return b.Write(p)
+			}),
+			reentryLow,
+		)
+
+		m1 := uniqueToken()
+		if !closedWithin(runAsync(func() { _, _ = l.WriteLog(reentryLow, []byte(m1)) })) {
+			t.Fatal("WriteLog deadlocked: hook called Unhook from its Write")
+		}
+		require.Contains(
+			t,
+			b.String(),
+			m1,
+		)
+
+		m2 := uniqueToken()
+		_, err := l.WriteLog(reentryLow, []byte(m2))
+		require.NoError(t, err)
+		require.NotContains(
+			t,
+			b.String(),
+			m2,
+			"an unhooked hook must not receive later messages",
+		)
+		require.Empty(
+			t,
+			a.String(),
+		)
+	})
+}
+
+func TestLogger_UnhookForRaceCondition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("thread-safe buffer", func(t *testing.T) {
+		t.Parallel()
+		safeBuf := synctest.NewBuffer(nil)
+		runHookUnhookStress(
+			NewLogger(logLevelWarning, io.Discard),
+			safeBuf,
+		)
+	})
+
+	t.Run("plain buffer", func(t *testing.T) {
+		t.Parallel()
+		buf := &bytes.Buffer{}
+		runHookUnhookStress(
+			NewLogger(logLevelWarning, buf),
+			buf,
+		)
+	})
+
+	t.Run("in-flight write to an unhooked sink", func(t *testing.T) {
+		t.Parallel()
+		buf := &bytes.Buffer{}
+		pw := &parkWriter{buf: buf, entered: make(chan struct{}), release: make(chan struct{})}
+		l := NewLogger(logLevelInfo, io.Discard)
+		id := l.Hook(pw, logLevelDebug)
+
+		var releaseOnce sync.Once
+		release := func() { releaseOnce.Do(func() { close(pw.release) }) }
+		line1, line2 := uniqueToken()+"\n", uniqueToken()+"\n"
+
+		first := runAsync(func() { _, _ = l.WriteLog(logLevelDebug, []byte(line1)) })
+		var second <-chan struct{}
+		t.Cleanup(func() {
+			release()
+			if !closedWithin(first) {
+				t.Error("first WriteLog did not return after release")
+			}
+			if second != nil && !closedWithin(second) {
+				t.Error("second WriteLog did not return after release")
+			}
+		})
+		if !closedWithin(pw.entered) {
+			t.Fatal("first write never reached the sink")
+		}
+
+		if !closedWithin(runAsync(func() { l.Unhook(id) })) {
+			t.Fatal("Unhook waited for an in-flight write")
+		}
+		if !closedWithin(runAsync(func() { l.Hook(pw, logLevelDebug) })) {
+			t.Fatal("Hook waited for an in-flight write")
+		}
+		second = runAsync(func() { _, _ = l.WriteLog(logLevelDebug, []byte(line2)) })
+		release()
+
+		if !closedWithin(first) {
+			t.Fatal("first WriteLog did not return")
+		}
+		if !closedWithin(second) {
+			t.Fatal("second WriteLog did not return")
+		}
+		out := buf.String()
+		require.Equal(
+			t,
+			2,
+			strings.Count(out, "\n"),
+		)
+		require.Contains(t, out, line1)
+		require.Contains(t, out, line2)
+	})
 }
 
 func TestLogger_WriteForRaceCondition(t *testing.T) {
@@ -204,62 +687,371 @@ func TestLogger_WriteForRaceCondition(t *testing.T) {
 
 func TestLogger_WriteLog(t *testing.T) {
 	t.Parallel()
-	m := uniqueToken()
-	b := bytes.NewBufferString("")
-	l := NewLogger(logLevelInfo, b)
-	require.NotNil(t, l)
 
-	n, err := l.WriteLog(logLevelSevere, []byte(m))
-	require.NoError(t, err)
-	require.Len(t, m, n)
-	require.Equal(t, m, b.String())
+	t.Run("basic write", func(t *testing.T) {
+		t.Parallel()
+		m := uniqueToken()
+		b := bytes.NewBufferString("")
+		l := NewLogger(logLevelInfo, b)
+		require.NotNil(t, l)
 
-	b.Reset()
-	m = uniqueToken()
+		n, err := l.WriteLog(logLevelSevere, []byte(m))
+		require.NoError(t, err)
+		require.Len(t, m, n)
+		require.Equal(
+			t,
+			m,
+			b.String(),
+		)
 
-	n, err = l.WriteLog(logLevelDebug, []byte(m))
-	require.NoError(t, err)
-	require.Equal(t, 0, n)
-	require.Empty(t, b.String())
+		b.Reset()
+		m = uniqueToken()
 
-	b.Reset()
-	m = uniqueToken()
+		n, err = l.WriteLog(logLevelDebug, []byte(m))
+		require.NoError(t, err)
+		require.Equal(t, 0, n)
+		require.Empty(
+			t,
+			b.String(),
+		)
 
-	n, err = l.WriteLog(logLevelSevere, []byte(m))
-	require.NoError(t, err)
-	require.Len(t, m, n)
-	require.Equal(t, m, b.String())
+		b.Reset()
+		m = uniqueToken()
+
+		n, err = l.WriteLog(logLevelSevere, []byte(m))
+		require.NoError(t, err)
+		require.Len(t, m, n)
+		require.Equal(
+			t,
+			m,
+			b.String(),
+		)
+	})
+
+	t.Run("panicking sink among several is reported as an error", func(t *testing.T) {
+		t.Parallel()
+		msg := uniqueToken()
+		safeBuf := bytes.NewBufferString("")
+		panicky := &panickyWriter{panicOn: []int{1}}
+		l := NewLogger(logLevelInfo, panicky, safeBuf)
+
+		n, err := l.WriteLog(logLevelInfo, []byte(msg))
+
+		require.Error(t, err)
+		require.Contains(
+			t,
+			err.Error(),
+			"panicked",
+		)
+		require.Contains(
+			t,
+			err.Error(),
+			"boom",
+		)
+		require.ErrorIs(t, err, errBoom)
+		require.Equal(
+			t,
+			len(msg),
+			n,
+			"n must reflect the message length",
+		)
+		require.Contains(
+			t,
+			safeBuf.String(),
+			msg,
+			"safe sink must receive the message",
+		)
+	})
+
+	t.Run("panicking single sink returns an error", func(t *testing.T) {
+		t.Parallel()
+		msg := uniqueToken()
+		panicky := &panickyWriter{panicOn: []int{1}}
+		l := NewLogger(logLevelInfo, panicky)
+
+		require.NotPanics(t, func() {
+			_, err := l.WriteLog(logLevelInfo, []byte(msg))
+			require.Error(t, err)
+			require.Contains(
+				t,
+				err.Error(),
+				"panicked",
+			)
+		})
+	})
+
+	t.Run("panic value that is not an error", func(t *testing.T) {
+		t.Parallel()
+		msg := uniqueToken()
+		l := NewLogger(logLevelInfo, &panicWithStringWriter{})
+
+		n, err := l.WriteLog(logLevelInfo, []byte(msg))
+
+		require.Error(t, err)
+		first, stack, _ := strings.Cut(
+			err.Error(),
+			"\n",
+		)
+		require.Contains(t, first, "panicked")
+		require.Contains(t, first, "text panic")
+		require.Contains(
+			t,
+			first,
+			"*loginjector.panicWithStringWriter",
+			"the user sink's type must be reported",
+		)
+		require.NotContains(
+			t,
+			first,
+			"*loginjector.writer",
+			"the guard's type must not be reported",
+		)
+		require.Contains(
+			t,
+			stack,
+			"goroutine ",
+			"the error must carry the stack trace",
+		)
+		require.NotZero(t, n)
+	})
+
+	t.Run("sink usable after a recovered panic", func(t *testing.T) {
+		t.Parallel()
+		msg1 := uniqueToken()
+		msg2 := uniqueToken()
+		resilient := &resilientWriter{panicOnce: true}
+		l := NewLogger(logLevelInfo, resilient)
+
+		_, err := l.WriteLog(logLevelInfo, []byte(msg1))
+		require.Error(t, err, "first write should panic and return an error")
+
+		_, err = l.WriteLog(logLevelInfo, []byte(msg2))
+		require.NoError(t, err, "sink must be usable after a recovered panic")
+		require.Contains(
+			t,
+			resilient.buf.String(),
+			msg2,
+		)
+	})
+
+	t.Run("sink logging to another sink while SetMinLevel is pending", func(t *testing.T) {
+		t.Parallel()
+		a, b := &bytes.Buffer{}, &bytes.Buffer{}
+		setDone := make(chan struct{})
+		inner := uniqueToken()
+		var (
+			l    *Logger
+			once sync.Once
+		)
+		l = NewLogger(
+			reentryMin,
+			WithMinLevel(
+				reentryHigh,
+				writerFunc(func(p []byte) (int, error) {
+					once.Do(func() {
+						go func() {
+							defer close(setDone)
+							l.SetMinLevel(reentryNewMin)
+						}()
+					poll:
+						for l.m.TryRLock() {
+							l.m.RUnlock()
+							select {
+							case <-setDone:
+								break poll
+							default:
+								runtime.Gosched()
+							}
+						}
+						_, _ = l.WriteLog(reentryLow, []byte(inner))
+					})
+					return a.Write(p)
+				}),
+			),
+		)
+		l.Hook(b, reentryLow)
+		t.Cleanup(func() {
+			if !closedWithin(setDone) {
+				t.Error("SetMinLevel goroutine did not return")
+			}
+		})
+
+		outer := uniqueToken()
+		if !closedWithin(runAsync(func() { _, _ = l.WriteLog(reentryHigh, []byte(outer)) })) {
+			t.Fatal("WriteLog deadlocked: re-entrant write queued behind a pending SetMinLevel")
+		}
+		require.Contains(
+			t,
+			a.String(),
+			outer,
+		)
+		require.Contains(
+			t,
+			b.String(),
+			inner,
+		)
+		require.NotContains(
+			t,
+			b.String(),
+			outer,
+		)
+	})
+
+	t.Run("sink may log to a different sink of the same logger", func(t *testing.T) {
+		t.Parallel()
+		a, b := &bytes.Buffer{}, &bytes.Buffer{}
+		inner := uniqueToken()
+		var l *Logger
+		l = NewLogger(
+			reentryMin,
+			WithMinLevel(
+				reentryHigh,
+				writerFunc(func(p []byte) (int, error) {
+					_, _ = l.WriteLog(reentryLow, []byte(inner))
+					return a.Write(p)
+				}),
+			),
+		)
+		l.Hook(b, reentryLow)
+
+		outer := uniqueToken()
+		if !closedWithin(runAsync(func() { _, _ = l.WriteLog(reentryHigh, []byte(outer)) })) {
+			t.Fatal("WriteLog deadlocked: sink logged to a different sink")
+		}
+		require.Contains(
+			t,
+			a.String(),
+			outer,
+		)
+		require.NotContains(
+			t,
+			a.String(),
+			inner,
+		)
+		require.Contains(
+			t,
+			b.String(),
+			inner,
+		)
+		require.NotContains(
+			t,
+			b.String(),
+			outer,
+		)
+	})
+}
+
+func TestLogger_WriteLogForRaceCondition(t *testing.T) {
+	t.Parallel()
+	const goroutines = 16
+	const iterations = 200
+
+	buf1 := bytes.NewBufferString("")
+	buf2 := bytes.NewBufferString("")
+	panicky := &panickyWriter{panicOn: []int{7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98}}
+	l := NewLogger(
+		logLevelInfo,
+		buf1,
+		panicky,
+		buf2,
+	)
+
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range iterations {
+				msg := fmt.Sprintf("msg-%d\n", i)
+				_, _ = l.WriteLog(logLevelInfo, []byte(msg))
+			}
+		}()
+	}
+	wg.Wait()
+
+	// each non-panicking buffer must hold exactly goroutines*iterations lines.
+	expectedLines := goroutines * iterations
+	actualLines1 := strings.Count(
+		buf1.String(),
+		"\n",
+	)
+	actualLines2 := strings.Count(
+		buf2.String(),
+		"\n",
+	)
+	require.Equal(
+		t,
+		expectedLines,
+		actualLines1,
+		"buf1 must receive exactly all messages",
+	)
+	require.Equal(
+		t,
+		expectedLines,
+		actualLines2,
+		"buf2 must receive exactly all messages",
+	)
 }
 
 //nolint:paralleltest // calls log.SetOutput on the std logger
 func TestLogger_Write(t *testing.T) {
-	m := uniqueToken()
-	b := bytes.NewBufferString("")
-	l := NewLogger(logLevelInfo, b)
-	require.NotNil(t, l)
+	t.Run("writes at the minimum level", func(t *testing.T) {
+		m := uniqueToken()
+		b := bytes.NewBufferString("")
+		l := NewLogger(logLevelInfo, b)
+		require.NotNil(t, l)
 
-	prev := log.Writer()
-	t.Cleanup(func() { log.SetOutput(prev) })
-	log.SetOutput(l)
+		prev := log.Writer()
+		t.Cleanup(func() { log.SetOutput(prev) })
+		log.SetOutput(l)
 
-	n, err := l.Write([]byte(m))
-	require.NoError(t, err)
-	require.Len(t, m, n)
-	require.Equal(t, m, b.String())
+		n, err := l.Write([]byte(m))
+		require.NoError(t, err)
+		require.Len(t, m, n)
+		require.Equal(
+			t,
+			m,
+			b.String(),
+		)
 
-	b.Reset()
-	m = uniqueToken()
+		b.Reset()
+		m = uniqueToken()
 
-	n, err = l.Write([]byte(m))
-	require.NoError(t, err)
-	require.Len(t, m, n)
-	require.Equal(t, m, b.String())
+		n, err = l.Write([]byte(m))
+		require.NoError(t, err)
+		require.Len(t, m, n)
+		require.Equal(
+			t,
+			m,
+			b.String(),
+		)
 
-	b.Reset()
-	m = uniqueToken()
-	log.Println(m)
+		b.Reset()
+		m = uniqueToken()
+		log.Println(m)
 
-	require.Contains(t, b.String(), m)
+		require.Contains(
+			t,
+			b.String(),
+			m,
+		)
+	})
+
+	t.Run("filtered write reports full length", func(t *testing.T) {
+		buf := &bytes.Buffer{}
+		l := NewLogger(
+			logLevelInfo,
+			WithMinLevel(logLevelSevere, buf),
+		)
+
+		n, err := l.Write([]byte("abc"))
+		require.NoError(t, err)
+		require.Equal(t, 3, n)
+		require.Empty(
+			t,
+			buf.String(),
+		)
+	})
 }
 
 func TestLogger_PrintAndPanic(t *testing.T) {
@@ -328,57 +1120,141 @@ func TestLogger_PrintAndPanic(t *testing.T) {
 	require.Contains(t, b.String(), m6)
 	require.Contains(t, b.String(), m7)
 }
+func TestLogger_WriterAs(t *testing.T) {
+	t.Parallel()
 
-// BenchmarkWriteLog measures WriteLog throughput for the 0-sink, 1-sink, and N-sink cases.
-// Run with: CGO_ENABLED=0 go test -bench=BenchmarkWriteLog -benchmem -run=^$ .
-func BenchmarkWriteLog(b *testing.B) {
-	msg := []byte("benchmark log message payload")
+	t.Run("level routing", func(t *testing.T) {
+		t.Parallel()
+		b := bytes.NewBufferString("")
+		l := NewLogger(logLevelInfo, b)
+		require.NotNil(t, l)
 
-	b.Run("0 sinks (below minimum, no hooks)", func(b *testing.B) {
-		l := NewLogger(logLevelInfo, io.Discard)
-		b.ResetTimer()
-		for range b.N {
-			_, _ = l.WriteLog(logLevelDebug, msg)
+		w := l.WriterAs(logLevelWarning)
+		m := uniqueToken()
+		_, _ = w.Write([]byte(m))
+		if s := b.String(); !strings.Contains(s, m) {
+			t.Errorf("Write method wrote an unexpected message: %v", s)
+		}
+		b.Reset()
+
+		w = l.WriterAs(logLevelDebug)
+		m = uniqueToken()
+		_, _ = w.Write([]byte(m))
+		if s := b.String(); strings.Contains(s, m) {
+			t.Errorf("Write method wrote an unexpected message: %v", s)
+		}
+		b.Reset()
+
+		w = l.WriterAs(logLevelSevere)
+		m = uniqueToken()
+		_, _ = w.Write([]byte(m))
+		if s := b.String(); !strings.Contains(s, m) {
+			t.Errorf("Write method wrote an unexpected message: %v", s)
 		}
 	})
 
-	b.Run("1 sink (single handler)", func(b *testing.B) {
-		l := NewLogger(logLevelInfo, io.Discard)
-		b.ResetTimer()
-		for range b.N {
-			_, _ = l.WriteLog(logLevelInfo, msg)
-		}
+	t.Run("filtered write reports full length", func(t *testing.T) {
+		t.Parallel()
+		buf := &bytes.Buffer{}
+		l := NewLogger(logLevelInfo, buf)
+
+		n, err := l.WriterAs(logLevelDebug).Write([]byte("abc"))
+		require.NoError(t, err)
+		require.Equal(t, 3, n)
+		require.Empty(
+			t,
+			buf.String(),
+		)
 	})
 
-	b.Run("1 sink (single hook below minimum)", func(b *testing.B) {
-		l := NewLogger(logLevelInfo, io.Discard)
-		l.Hook(io.Discard, logLevelDebug)
-		b.ResetTimer()
-		for range b.N {
-			_, _ = l.WriteLog(logLevelDebug, msg)
-		}
+	t.Run("bufio flush of a filtered message succeeds", func(t *testing.T) {
+		t.Parallel()
+		l := NewLogger(logLevelInfo, &bytes.Buffer{})
+
+		bw := bufio.NewWriter(
+			l.WriterAs(logLevelDebug),
+		)
+		_, err := bw.WriteString("x")
+		require.NoError(t, err)
+		require.NoError(
+			t,
+			bw.Flush(),
+		)
 	})
 
-	b.Run("4 sinks (concurrent fan-out)", func(b *testing.B) {
-		l := NewLogger(logLevelInfo, io.Discard, io.Discard, io.Discard, io.Discard)
-		b.ResetTimer()
-		for range b.N {
-			_, _ = l.WriteLog(logLevelInfo, msg)
-		}
-	})
+	t.Run("error is passed through", func(t *testing.T) {
+		t.Parallel()
+		l := NewLogger(logLevelInfo, &failingWriter{})
 
-	b.Run("2 hooks below minimum (concurrent fan-out, hooks only)", func(b *testing.B) {
-		l := NewLogger(logLevelInfo, io.Discard)
-		l.Hook(io.Discard, logLevelDebug)
-		l.Hook(io.Discard, logLevelDebug)
-		b.ResetTimer()
-		for range b.N {
-			_, _ = l.WriteLog(logLevelDebug, msg)
-		}
+		p := []byte("abc")
+		n, err := l.WriterAs(logLevelWarning).Write(p)
+		require.ErrorIs(t, err, errSinkFailed)
+		require.LessOrEqual(
+			t,
+			n,
+			len(p),
+		)
 	})
 }
 
+func TestLogger_WriterAsForRaceCondition(t *testing.T) {
+	t.Parallel()
+	l := NewLogger(logLevelInfo, &bytes.Buffer{})
+	w := l.WriterAs(logLevelWarning)
+	msg := []byte("message\n")
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				n, err := w.Write(msg)
+				assert.NoError(t, err)
+				assert.Equal(
+					t,
+					len(msg),
+					n,
+				)
+			}
+		}()
+	}
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				l.SetMinLevel(logLevelSevere)
+				l.SetMinLevel(logLevelInfo)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // TestWithMinLevel_Logger covers the LeveledHandler gate inside Logger.WriteLog.
+//
+//nolint:paralleltest // captureStderr redirects the process-global os.Stderr
+func TestLogger_SinkPanicNotice(t *testing.T) {
+	t.Run("one stderr line names the sink and the panic value", func(t *testing.T) {
+		l := NewLogger(logLevelInfo, &panicWithStringWriter{})
+		out := captureStderr(t, func() {
+			_, err := l.WriteLog(logLevelInfo, []byte("message"))
+			require.Error(t, err)
+		})
+		require.Equal(t, "loginjector: sink *loginjector.panicWithStringWriter panicked: text panic\n", out)
+	})
+
+	t.Run("newlines in the panic value are flattened", func(t *testing.T) {
+		l := NewLogger(logLevelInfo, &panicWithValueWriter{value: "first\nsecond"})
+		out := captureStderr(t, func() {
+			_, err := l.WriteLog(logLevelInfo, []byte("message"))
+			require.Error(t, err)
+		})
+		require.Equal(t, "loginjector: sink *loginjector.panicWithValueWriter panicked: first second\n", out)
+	})
+}
+
 func TestWithMinLevel_Logger(t *testing.T) {
 	t.Parallel()
 
@@ -495,79 +1371,241 @@ func TestWithMinLevel_Logger(t *testing.T) {
 	})
 }
 
-func TestLogger_StdLog(t *testing.T) {
-	t.Parallel()
+// BenchmarkWriteLog measures WriteLog throughput for the 0-sink, 1-sink, and N-sink cases.
+// Run with: CGO_ENABLED=0 go test -bench=BenchmarkWriteLog -benchmem -run=^$ .
+func BenchmarkWriteLog(b *testing.B) {
+	msg := []byte("benchmark log message payload")
 
-	t.Run("prefix and level routing", func(t *testing.T) {
-		t.Parallel()
-
-		b := &bytes.Buffer{}
-		l := NewLogger(logLevelInfo, b)
-
-		dbLog := l.StdLog(logLevelWarning, "sqlite ")
-		dbLog.Printf("x")
-
-		// Lmsgprefix places the prefix immediately before the message with no
-		// leading date/time from the std logger; the sink here adds no timestamp.
-		require.Equal(t, "sqlite x\n", b.String())
+	b.Run("0 sinks (below minimum, no hooks)", func(b *testing.B) {
+		l := NewLogger(logLevelInfo, io.Discard)
+		b.ResetTimer()
+		for range b.N {
+			_, _ = l.WriteLog(logLevelDebug, msg)
+		}
 	})
 
-	t.Run("below level is gated", func(t *testing.T) {
-		t.Parallel()
-
-		b := &bytes.Buffer{}
-		l := NewLogger(logLevelInfo, b) // minimum is Info
-
-		dbLog := l.StdLog(logLevelDebug, "db ") // Debug is below Info
-		dbLog.Printf("dropped")
-
-		require.Empty(t, b.String(), "a StdLog below the minimum level must be gated out")
+	b.Run("1 sink (single handler)", func(b *testing.B) {
+		l := NewLogger(logLevelInfo, io.Discard)
+		b.ResetTimer()
+		for range b.N {
+			_, _ = l.WriteLog(logLevelInfo, msg)
+		}
 	})
 
-	t.Run("no doubled timestamp when paired with TimestampedHandler sink", func(t *testing.T) {
-		t.Parallel()
+	b.Run("1 sink (single hook below minimum)", func(b *testing.B) {
+		l := NewLogger(logLevelInfo, io.Discard)
+		l.Hook(io.Discard, logLevelDebug)
+		b.ResetTimer()
+		for range b.N {
+			_, _ = l.WriteLog(logLevelDebug, msg)
+		}
+	})
 
-		fixed := time.Date(2024, 3, 15, 10, 30, 45, 0, time.UTC)
-		inner := &bytes.Buffer{}
-		sink := TimestampedHandler(inner, withClock(func() time.Time { return fixed }))
-		l := NewLogger(logLevelInfo, sink)
+	b.Run("4 sinks (concurrent fan-out)", func(b *testing.B) {
+		l := NewLogger(
+			logLevelInfo,
+			io.Discard,
+			io.Discard,
+			io.Discard,
+			io.Discard,
+		)
+		b.ResetTimer()
+		for range b.N {
+			_, _ = l.WriteLog(logLevelInfo, msg)
+		}
+	})
 
-		dbLog := l.StdLog(logLevelInfo, "sqlite ")
-		dbLog.Printf("query ran")
-
-		// exactly one timestamp: the sink stamps, the std logger uses Lmsgprefix only.
-		out := inner.String()
-		require.Equal(t, "2024/03/15 10:30:45 sqlite query ran\n", out)
-		require.Equal(t, 1, strings.Count(out, "2024/03/15 10:30:45"), "line must carry exactly one timestamp")
+	b.Run("2 hooks below minimum (concurrent fan-out, hooks only)", func(b *testing.B) {
+		l := NewLogger(logLevelInfo, io.Discard)
+		l.Hook(io.Discard, logLevelDebug)
+		l.Hook(io.Discard, logLevelDebug)
+		b.ResetTimer()
+		for range b.N {
+			_, _ = l.WriteLog(logLevelDebug, msg)
+		}
 	})
 }
 
-func TestLogger_WriterAs(t *testing.T) {
-	t.Parallel()
-	b := bytes.NewBufferString("")
-	l := NewLogger(logLevelInfo, b)
-	require.NotNil(t, l)
+// Re-entrancy routing: sink A is WithMinLevel(reentryHigh, a) and fires only on
+// WriteLog(reentryHigh); sink B is Hook(b, reentryLow) and fires only on
+// WriteLog(reentryLow). The logger minimum sits between them, and a concurrent
+// SetMinLevel moves it to reentryNewMin, which changes neither A's nor B's routing.
+const (
+	reentryLow    = logLevelDebug
+	reentryMin    = logLevelInfo
+	reentryNewMin = logLevelWarning
+	reentryHigh   = logLevelSevere
+)
 
-	w := l.WriterAs(logLevelWarning)
-	m := uniqueToken()
-	_, _ = w.Write([]byte(m))
-	if s := b.String(); !strings.Contains(s, m) {
-		t.Errorf("Write method wrote an unexpected message: %v", s)
-	}
-	b.Reset()
+// deadlockTimeout bounds every wait on a call that deadlocks on a broken logger.
+const deadlockTimeout = 2 * time.Second
 
-	w = l.WriterAs(logLevelDebug)
-	m = uniqueToken()
-	_, _ = w.Write([]byte(m))
-	if s := b.String(); strings.Contains(s, m) {
-		t.Errorf("Write method wrote an unexpected message: %v", s)
-	}
-	b.Reset()
+var (
+	errBoom       = errors.New("boom")
+	errSinkFailed = errors.New("sink failed")
+)
 
-	w = l.WriterAs(logLevelSevere)
-	m = uniqueToken()
-	_, _ = w.Write([]byte(m))
-	if s := b.String(); !strings.Contains(s, m) {
-		t.Errorf("Write method wrote an unexpected message: %v", s)
+// runAsync runs fn in a goroutine and returns a channel closed when fn returns.
+func runAsync(fn func()) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	return done
+}
+
+// closedWithin reports whether done is closed within deadlockTimeout.
+func closedWithin(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	case <-time.After(deadlockTimeout):
+		return false
 	}
 }
+
+// runHookUnhookStress runs 8 goroutines calling WriteLog at sink's level while 4 loop
+// Hook/Unhook of sink and 2 loop SetMinLevel, then joins them all.
+func runHookUnhookStress(l *Logger, sink io.Writer) {
+	const level = logLevelWarning
+	l.Hook(sink, level)
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				_, _ = l.WriteLog(level, []byte("x\n"))
+			}
+		}()
+	}
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				l.Unhook(
+					l.Hook(sink, level),
+				)
+			}
+		}()
+	}
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 100 {
+				l.SetMinLevel(
+					level - 1,
+				)
+				l.SetMinLevel(level)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// panickyWriter panics with errBoom on the listed call numbers and writes to buf otherwise.
+var _ io.Writer = (*panickyWriter)(nil)
+
+type panickyWriter struct {
+	buf      bytes.Buffer
+	count    int
+	panicOn  []int // call numbers (1-based) that panic
+	panicCnt int   // index of the next entry in panicOn
+}
+
+func (p *panickyWriter) Write(data []byte) (int, error) {
+	p.count++
+	if p.panicCnt < len(p.panicOn) && p.count == p.panicOn[p.panicCnt] {
+		p.panicCnt++
+		panic(errBoom)
+	}
+	return p.buf.Write(data)
+}
+
+// panicWithStringWriter panics with a non-error string value.
+var _ io.Writer = (*panicWithStringWriter)(nil)
+
+type panicWithStringWriter struct{}
+
+func (p *panicWithStringWriter) Write(_ []byte) (int, error) {
+	panic("text panic")
+}
+
+// panicWithValueWriter panics with the configured value.
+var _ io.Writer = (*panicWithValueWriter)(nil)
+
+type panicWithValueWriter struct{ value any }
+
+func (p *panicWithValueWriter) Write(_ []byte) (int, error) {
+	panic(p.value)
+}
+
+// resilientWriter panics once then behaves normally.
+var _ io.Writer = (*resilientWriter)(nil)
+
+type resilientWriter struct {
+	buf       bytes.Buffer
+	panicOnce bool
+}
+
+func (r *resilientWriter) Write(data []byte) (int, error) {
+	if r.panicOnce {
+		r.panicOnce = false
+		panic(
+			errors.New("one-time panic"),
+		)
+	}
+	return r.buf.Write(data)
+}
+
+// failingWriter always fails with errSinkFailed.
+var _ io.Writer = (*failingWriter)(nil)
+
+type failingWriter struct{}
+
+func (f *failingWriter) Write(_ []byte) (int, error) { return 0, errSinkFailed }
+
+// parkWriter parks its first Write until release is closed, signalling entered
+// once it is inside; every Write then appends to buf. It is a pointer type so
+// the logger deduplicates its registrations.
+var _ io.Writer = (*parkWriter)(nil)
+
+type parkWriter struct {
+	buf     *bytes.Buffer
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (pw *parkWriter) Write(p []byte) (int, error) {
+	if pw.calls.Add(1) == 1 {
+		close(pw.entered)
+		<-pw.release
+	}
+	return pw.buf.Write(p)
+}
+
+// valueWriter is a comparable value-type sink.
+var _ io.Writer = valueWriter{}
+
+type valueWriter struct{ id int }
+
+func (v valueWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// sliceWriter is a non-comparable value-type sink: hashing it as a map key panics.
+var _ io.Writer = sliceWriter{}
+
+type sliceWriter struct{ lines []string }
+
+func (s sliceWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// writerFunc adapts a function to io.Writer.
+var _ io.Writer = writerFunc(nil)
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

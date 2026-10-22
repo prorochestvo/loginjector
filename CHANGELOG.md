@@ -32,6 +32,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `NewRecoverHandler`: `Flush` commits the buffered response; a panic after a commit
   is logged and re-panicked as `http.ErrAbortHandler`, so an outer recover middleware
   now sees `http.ErrAbortHandler` after a `Flush` instead of a 500 being written.
+- `Logger.WriteLog` releases the logger lock before writing to sinks; a call already in
+  progress may still reach a hook removed, or use a level changed, after `Unhook`/`SetMinLevel`
+  returned. `Unhook` and `SetMinLevel` only guarantee that WriteLog calls *starting* after
+  they return observe the change.
+- A panic in a handler or hook is recovered and returned as an error (including with a single
+  matching sink, which previously propagated the panic). The error message names the sink's
+  type, wraps the panic value, and carries the stack trace; a one-line notice naming the sink
+  type and the panic value is also written to stderr. Callers going through std `log` (which
+  discards `Write` errors) see the panic only on stderr.
+- `Logger.Write` and `WriterAs(level).Write` report `len(p)` for messages filtered below the
+  threshold, as the `io.Writer` contract requires; `WriteLog` still returns 0 for "no sink matched".
+- `CloseOrPanic` and `CloseOrLog` treat a nil closer as a no-op, matching `CloseOrLogError`
+  and `CloseOrJoin`.
+- Registrations of the same pointer sink on one logger (directly, via `WithMinLevel`, or as a
+  hook) now share one mutex: they serialize, and such a sink must not log into another
+  registration of itself (that now deadlocks, documented in the re-entrancy contract). The
+  logger keeps every registered pointer sink reachable for its lifetime.
+- `TelegramHandler` no longer prints a response-body close error to std `log`; the close
+  error is dropped.
 - `TelegramHandler` now wraps its multipart-construction errors with `%w` instead of `%s`.
   The error messages are byte-identical; `errors.Is`/`errors.As` can now reach the
   underlying error. Errors that carry the redacted bot-token URL are unchanged and still
@@ -51,6 +70,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   as final status.
 - `NewRecoverHandler` sent a declared trailer (`Trailer: X-Checksum`, value set after `Write`)
   as a response header as well as a trailer; it now goes out only as a trailer.
+- A hook or handler calling `Hook`, `Unhook`, or `SetMinLevel` from its `Write` deadlocked;
+  a pending `Hook`/`Unhook`/`SetMinLevel` blocked all logging until the slowest sink returned.
+- A panicking sink crashed the process when two or more sinks matched; the process stayed alive
+  with a single matching sink only if the caller recovered the panic.
+- A pointer sink registered more than once on a logger (directly, via `WithMinLevel`, or as a
+  hook) could be written concurrently from different registrations, causing data races.
+- `TelegramHandler` could deadlock when std `log` output was routed through the logger and
+  the handler tried to report a close error via `CloseOrLog`.
 - `RotatingFileHandler` without options pruned every `*.log` file in its folder, whatever
   its name, when the file count exceeded `WithMaxFiles` — deleting log files of other
   components and the live file of another handler sharing the folder (including

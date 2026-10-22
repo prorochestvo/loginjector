@@ -75,7 +75,8 @@ func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Wri
 			if err != nil {
 				return 0, fmt.Errorf("could not send HTTP request: %v", redactToken(err.Error()))
 			}
-			defer CloseOrLog(r.Body)
+			// close error is discarded; logging here would re-enter the logger.
+			defer func() { _ = r.Body.Close() }()
 
 			if r.StatusCode != http.StatusOK {
 				return 0, fmt.Errorf("could not to deliver message, status code: %v", r.StatusCode)
@@ -1066,13 +1067,18 @@ var _ LeveledHandler = (*leveledWriter)(nil)
 // writer is a thread-safe writer.
 type writer struct {
 	m        sync.Mutex
+	shared   *sync.Mutex // when set, the mutex to use instead of &w.m (shared per-identity registry)
 	h        func(msg []byte) (n int, err error)
 	original io.Writer // the unwrapped sink; set by ensureThreadSafe for unwrapLeveled.
 }
 
 // Write writes the message to the handler.
 func (w *writer) Write(p []byte) (n int, err error) {
-	w.m.Lock()
-	defer w.m.Unlock()
+	mu := &w.m
+	if w.shared != nil {
+		mu = w.shared
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	return w.h(p)
 }

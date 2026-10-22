@@ -4,10 +4,119 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestCloseOrPanic(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil closer is no-op", func(t *testing.T) {
+		t.Parallel()
+		require.NotPanics(t, func() {
+			CloseOrPanic(nil)
+		})
+	})
+
+	t.Run("closer without error does not panic", func(t *testing.T) {
+		t.Parallel()
+		require.NotPanics(t, func() {
+			CloseOrPanic(&fixedCloser{err: nil})
+		})
+	})
+
+	t.Run("closer with error panics", func(t *testing.T) {
+		t.Parallel()
+		closeErr := errors.New("close failed")
+		require.PanicsWithError(t, closeErr.Error(), func() {
+			CloseOrPanic(&fixedCloser{err: closeErr})
+		})
+	})
+
+	t.Run("typed nil closer is still closed", func(t *testing.T) {
+		t.Parallel()
+		var c *nilSafeCloser
+		before := nilSafeCloserCalls.Load()
+		require.PanicsWithError(t, errNilSafeClose.Error(), func() { CloseOrPanic(c) })
+		require.Equal(
+			t,
+			before+1,
+			nilSafeCloserCalls.Load(),
+			"Close must be called on a typed nil",
+		)
+	})
+}
+
+//nolint:paralleltest // modifies the global log output
+func TestCloseOrLog(t *testing.T) {
+	t.Run("nil closer is no-op", func(t *testing.T) {
+		prev := log.Writer()
+		t.Cleanup(func() { log.SetOutput(prev) })
+
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		require.NotPanics(t, func() {
+			CloseOrLog(nil)
+		})
+		require.Empty(
+			t,
+			buf.String(),
+		)
+	})
+
+	t.Run("closer without error writes nothing", func(t *testing.T) {
+		prev := log.Writer()
+		t.Cleanup(func() { log.SetOutput(prev) })
+
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		CloseOrLog(&fixedCloser{err: nil})
+		require.Empty(
+			t,
+			buf.String(),
+		)
+	})
+
+	t.Run("closer with error logs it", func(t *testing.T) {
+		prev := log.Writer()
+		t.Cleanup(func() { log.SetOutput(prev) })
+
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		closeErr := errors.New("close failed")
+		CloseOrLog(&fixedCloser{err: closeErr})
+		require.Contains(
+			t,
+			buf.String(),
+			"close failed",
+		)
+	})
+
+	t.Run("typed nil closer is still closed", func(t *testing.T) {
+		prev := log.Writer()
+		t.Cleanup(func() { log.SetOutput(prev) })
+
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		var c *nilSafeCloser
+		before := nilSafeCloserCalls.Load()
+		CloseOrLog(c)
+		require.Equal(
+			t,
+			before+1,
+			nilSafeCloserCalls.Load(),
+			"Close must be called on a typed nil",
+		)
+		require.Contains(
+			t,
+			buf.String(),
+			errNilSafeClose.Error(),
+		)
+	})
+}
 
 func TestCloseOrLogError(t *testing.T) {
 	t.Parallel()
@@ -111,6 +220,23 @@ func TestCloseOrJoin(t *testing.T) {
 		})
 		require.NoError(t, err)
 	})
+}
+
+// errNilSafeClose is returned by every (*nilSafeCloser).Close call.
+var errNilSafeClose = errors.New("nil-safe close failed")
+
+// nilSafeCloserCalls counts (*nilSafeCloser).Close calls; the receiver may be nil,
+// so the count cannot live on it.
+var nilSafeCloserCalls atomic.Int32
+
+// nilSafeCloser accepts a nil receiver: Close records the call and fails.
+var _ io.Closer = (*nilSafeCloser)(nil)
+
+type nilSafeCloser struct{}
+
+func (c *nilSafeCloser) Close() error {
+	nilSafeCloserCalls.Add(1)
+	return errNilSafeClose
 }
 
 // trackingCloser records whether Close was called.
