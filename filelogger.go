@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -22,7 +23,8 @@ func WithMaxFileCapacity(n uint32) FileLoggerOption {
 }
 
 // WithMaxFilesInFolder overrides the maximum number of rotated log files retained in
-// the log folder. Older files beyond the limit are pruned on rotation. The default is 7.
+// the log folder. Older files beyond the limit are pruned on rotation. Values below 1
+// are treated as 1. The default is 7.
 func WithMaxFilesInFolder(n int) FileLoggerOption {
 	return func(c *fileLoggerConfig) { c.maxFilesInFolder = n }
 }
@@ -53,9 +55,11 @@ func WithFileCompression() FileLoggerOption {
 // instead of returning an error. This option is OFF by default — an empty folder
 // without this option is a hard error, so logs never silently land in an unexpected
 // location. Note that the shared temp path is a residual risk: on multi-user systems
-// another process could create the directory before NewFileLogger and own it with
-// permissive permissions; NewFileLogger calls os.Chmod after MkdirAll to enforce 0750,
-// but there is a brief window between directory creation and the chmod call.
+// another process could create the directory before NewFileLogger. An existing fallback
+// folder must be a real directory (not a symlink) owned (on Unix) by the current user, or
+// NewFileLogger fails; an accepted existing fallback folder is chmodded to 0750. The
+// check-then-chmod is not atomic, so a non-sticky TMPDIR writable by other users remains
+// a residual risk.
 func WithTempDirFallback() FileLoggerOption {
 	return func(c *fileLoggerConfig) { c.tempFallback = true }
 }
@@ -119,6 +123,10 @@ func WithPrinterMinLevel(level LogLevel) FileLoggerOption {
 // unless WithTempDirFallback is passed, in which case logs land under
 // filepath.Join(os.TempDir(), "logs"). An empty prefix is always rejected because a
 // hidden dotfile log (prefix ".") is a footgun.
+// Only the leaf folder created by this call is set to 0750 exactly, regardless of the
+// process umask. Parent folders created by MkdirAll get 0750 minus the umask; permissions
+// on a pre-existing folder are left unchanged, except an accepted temp-fallback folder,
+// which is set to 0750.
 //
 // Defaults: maxFileCapacity = 5 MiB, maxFilesInFolder = 7, printer ON, std-log
 // redirect OFF, temp fallback OFF.
@@ -147,19 +155,54 @@ func NewFileLogger(folder, prefix string, minLevel LogLevel, opts ...FileLoggerO
 		return nil, fmt.Errorf("loginjector: file logger prefix %q must not contain path separators", prefix)
 	}
 
+	tempFallbackFolder := false
 	if folder == "" {
 		if !cfg.tempFallback {
 			return nil, errors.New("loginjector: empty folder and temp fallback not enabled")
 		}
 		folder = filepath.Join(os.TempDir(), "logs")
+		tempFallbackFolder = true
 	}
 
-	if err := os.MkdirAll(folder, 0o750); err != nil {
+	folder = filepath.Clean(folder)
+	if err := os.MkdirAll(filepath.Dir(folder), 0o750); err != nil {
 		return nil, fmt.Errorf("loginjector: create log folder %q: %w", folder, err)
 	}
-	// MkdirAll does not chmod a pre-existing directory; enforce 0o750 explicitly.
-	if err := os.Chmod(folder, 0o750); err != nil {
-		return nil, fmt.Errorf("loginjector: set permissions on log folder %q: %w", folder, err)
+
+	mkdirErr := os.Mkdir(folder, 0o750)
+	switch {
+	case mkdirErr == nil:
+		if err := os.Chmod(folder, 0o750); err != nil {
+			return nil, fmt.Errorf("loginjector: set permissions on log folder %q: %w", folder, err)
+		}
+	case errors.Is(mkdirErr, fs.ErrExist):
+		var info os.FileInfo
+		var err error
+		if tempFallbackFolder {
+			info, err = os.Lstat(folder)
+		} else {
+			info, err = os.Stat(folder)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("loginjector: create log folder %q: %w", folder, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			// only reachable for the temp fallback, which is inspected with Lstat.
+			return nil, fmt.Errorf("loginjector: create log folder %q: is a symlink", folder)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("loginjector: create log folder %q: not a directory", folder)
+		}
+		if tempFallbackFolder {
+			if err := checkFolderOwner(info); err != nil {
+				return nil, fmt.Errorf("loginjector: create log folder %q: %w", folder, err)
+			}
+			if err := os.Chmod(folder, 0o750); err != nil {
+				return nil, fmt.Errorf("loginjector: set permissions on log folder %q: %w", folder, err)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("loginjector: create log folder %q: %w", folder, mkdirErr)
 	}
 
 	rotatingOpts := []RotatingFileOption{
