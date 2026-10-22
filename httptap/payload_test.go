@@ -555,6 +555,84 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 		require.Equal(t, 1, strings.Count(summaryOutput, "\n"), "summary should be one line")
 		require.Contains(t, summaryOutput, "%0A", "newline should be escaped in summary")
 	})
+
+	t.Run("first_final_status_wins", func(t *testing.T) {
+		t.Parallel()
+
+		next := func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			w.WriteHeader(http.StatusCreated)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("response"))
+		}
+
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, next, WithSummaryWriter(io.Discard))
+
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.Contains(t, b.String(), "201 Created")
+		require.NotContains(t, b.String(), "500")
+	})
+
+	t.Run("write_then_writeheader_logs_200", func(t *testing.T) {
+		t.Parallel()
+
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			_, _ = w.Write([]byte("body"))
+			w.WriteHeader(http.StatusNotFound)
+		}, WithSummaryWriter(io.Discard))
+
+		req := httptest.NewRequest(http.MethodGet, "/", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.Contains(t, b.String(), "200 OK")
+	})
+
+	t.Run("informational_not_logged_as_final", func(t *testing.T) {
+		t.Parallel()
+
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			w.WriteHeader(http.StatusEarlyHints)
+			_, _ = w.Write([]byte("body"))
+		}, WithSummaryWriter(io.Discard))
+
+		req := httptest.NewRequest(http.MethodGet, "/", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.Contains(t, b.String(), "200 OK")
+	})
+
+	t.Run("flush_then_writeheader_logs_200", func(t *testing.T) {
+		t.Parallel()
+
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}, WithSummaryWriter(io.Discard))
+
+		req := httptest.NewRequest(http.MethodGet, "/", bytes.NewBufferString(""))
+		rec := httptest.NewRecorder()
+		h(rec, req)
+
+		require.Contains(t, b.String(), "200 OK")
+	})
 }
 
 // TestSummaryWriter exercises WithSummaryWriter in full.

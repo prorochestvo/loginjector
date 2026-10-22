@@ -104,7 +104,8 @@ func NewRecoverHandler(
 				return
 			}
 			if rrw.committed {
-				// already flushed by beforeFlush; nothing more to do.
+				// already flushed by beforeFlush; copy any trailers set after the flush.
+				copyTrailers(w.Header(), rrw.headers, rrw.snapshot)
 				return
 			}
 			if err := rrw.flushTo(w); err != nil {
@@ -253,12 +254,11 @@ func copyTrailers(realHeader, live, snapshot http.Header) {
 	for k, v := range live {
 		key := strings.TrimSpace(k)
 		if strings.HasPrefix(key, http.TrailerPrefix) {
-			// Remove the prefix and copy to real
-			trailerKey := strings.TrimPrefix(key, http.TrailerPrefix)
-			realHeader[trailerKey] = append([]string(nil), v...)
-		} else if _, isDeclared := trailerMap[http.CanonicalHeaderKey(key)]; isDeclared {
-			// Declared trailer, copy to real
+			// Copy with prefix intact so ResponseWriter recognizes it as a trailer
 			realHeader[key] = append([]string(nil), v...)
+		} else if _, isDeclared := trailerMap[http.CanonicalHeaderKey(key)]; isDeclared {
+			// Declared trailer: set with prefix so it's recognized as a trailer
+			realHeader[http.TrailerPrefix+key] = append([]string(nil), v...)
 		}
 	}
 }

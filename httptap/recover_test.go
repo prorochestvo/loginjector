@@ -543,4 +543,171 @@ func TestNewRecoverHandler(t *testing.T) {
 		count := strings.Count(log, "panic:")
 		assert.Equal(t, halfPanic, count, "exactly halfPanic log lines must be emitted")
 	})
+
+	t.Run("clean_path_declared_trailer_sent", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Trailer", "X-Checksum")
+			_, _ = w.Write([]byte("body"))
+			w.Header().Set("X-Checksum", "abc")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h(rec, req)
+
+		require.Equal(t, "abc", rec.Result().Trailer.Get("X-Checksum"))
+		require.Empty(t, rec.Result().Header.Get("X-Checksum"))
+	})
+
+	t.Run("clean_path_prefixed_trailer_sent", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("body"))
+			// Set a trailer after the body write.
+			// The http.TrailerPrefix signals that this should be sent as a trailer.
+			w.Header().Set(http.TrailerPrefix+"X-Sum", "s1")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h(rec, req)
+
+		// The ResponseRecorder's Result() separates headers with TrailerPrefix into the Trailer map
+		require.Equal(t, "s1", rec.Result().Trailer.Get("X-Sum"))
+	})
+
+	t.Run("informational_without_header_call_keeps_real_headers", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		slw := newStatusLogWriter()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			// Call WriteHeader with informational status without calling Header() first.
+			// This means rrw.headers is nil, so no buffered headers are applied.
+			w.WriteHeader(http.StatusEarlyHints)
+			_, _ = w.Write([]byte("body"))
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		slw.Header().Set("X-Outer", "1")
+		h(slw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		// The fake should have seen the informational status
+		require.Contains(t, slw.statusCodes, http.StatusEarlyHints)
+	})
+
+	t.Run("informational_forwarded_immediately", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		slw := newStatusLogWriter()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Link", "</a.css>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("body"))
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(slw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, []int{http.StatusEarlyHints, http.StatusOK}, slw.statusCodes)
+		require.Equal(t, "</a.css>; rel=preload", slw.headerSnapshots[0].Get("Link"))
+	})
+
+	t.Run("panic_after_informational_sends_500_without_handler_headers", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		slw := newStatusLogWriter()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "999")
+			w.WriteHeader(http.StatusEarlyHints)
+			panic("boom")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(slw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusInternalServerError, slw.finalStatus)
+		require.Empty(t, slw.finalHeaders.Get("Content-Length"))
+	})
+
+	t.Run("flush_then_more_writes_stream_through", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		fw := &fakeFlusherWriter{
+			ResponseRecorder: httptest.NewRecorder(),
+			onFlush:          func() {},
+		}
+
+		var aWasWritten bool
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("a"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+				aWasWritten = fw.Body.String() == "a"
+			}
+			_, _ = w.Write([]byte("b"))
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.True(t, aWasWritten, "body 'a' must be on wire before next returns")
+		require.Equal(t, "ab", fw.Body.String())
+	})
+
+	t.Run("flush_first_then_declared_trailer_sent", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Trailer", "X-Checksum")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			_, _ = w.Write([]byte("body"))
+			w.Header().Set("X-Checksum", "abc")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		h(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, "abc", rec.Result().Trailer.Get("X-Checksum"))
+	})
+
+	t.Run("panic_after_write_and_flush_buffered_body_not_on_wire", func(t *testing.T) {
+		t.Parallel()
+		l, logBuf := newRecoverTestLogger(t)
+		fw := &fakeFlusherWriter{
+			ResponseRecorder: httptest.NewRecorder(),
+			onFlush:          func() {},
+		}
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("partial"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			panic("boom")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+			h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
+		})
+
+		require.Equal(t, http.StatusOK, fw.Code)
+		require.Equal(t, "partial", fw.Body.String())
+		require.Contains(t, logBuf.String(), "panic:")
+	})
 }

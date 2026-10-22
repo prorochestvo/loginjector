@@ -345,6 +345,115 @@ func TestNewAccessHandler(t *testing.T) {
 		// The escaped path should be in the output
 		require.Contains(t, output, "%0A")
 	})
+
+	t.Run("no_write_logs_implicit_200", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		next := func(_ http.ResponseWriter, _ *http.Request) {}
+		h := NewAccessHandler(&buf, next)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+
+		require.Contains(t, buf.String(), "[200]")
+	})
+
+	t.Run("informational_then_final", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		slw := newStatusLogWriter()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusEarlyHints) // Informational
+			w.WriteHeader(http.StatusNoContent)  // Final status
+		}
+		h := NewAccessHandler(&buf, next)
+
+		h(slw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Contains(t, buf.String(), "[204]")
+		require.Equal(t, []int{http.StatusEarlyHints, http.StatusNoContent}, slw.statusCodes)
+	})
+
+	t.Run("informational_then_write", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		slw := newStatusLogWriter()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusEarlyHints) // Informational
+			_, _ = w.Write([]byte("body"))
+		}
+		h := NewAccessHandler(&buf, next)
+
+		h(slw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Contains(t, buf.String(), "[200]")
+	})
+
+	t.Run("flush_before_writeheader_logs_200", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		rec := httptest.NewRecorder()
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}
+		h := NewAccessHandler(&buf, next)
+
+		h(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Contains(t, buf.String(), "[200]")
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("panic_before_write_logs_000", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		next := func(_ http.ResponseWriter, _ *http.Request) {
+			panic("boom")
+		}
+		h := NewAccessHandler(&buf, next)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+
+		require.Panics(t, func() { h(rec, req) })
+		require.Contains(t, buf.String(), "[000]")
+	})
+
+	t.Run("access_over_recover_flush_logs_404", func(t *testing.T) {
+		t.Parallel()
+
+		var accessBuf bytes.Buffer
+		l, _ := newRecoverTestLogger(t)
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+
+		recoverH := NewRecoverHandler(l, logLevelInfo, next)
+		accessH := NewAccessHandler(&accessBuf, recoverH)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		accessH(rec, req)
+
+		require.Contains(t, accessBuf.String(), "[404]")
+	})
 }
 
 // BenchmarkNewAccessHandler measures per-request allocations on the steady-state
