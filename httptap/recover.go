@@ -180,9 +180,15 @@ func (rrw *recoverResponseWriter) Write(b []byte) (int, error) {
 	return rrw.body.Write(b)
 }
 
-// markHijacked satisfies hijackMarker so wrapWithOptionalInterfaces can set the
+// markHijacked satisfies tapWriter so wrapWithOptionalInterfaces can set the
 // hijacked flag when a downstream handler calls Hijack.
 func (rrw *recoverResponseWriter) markHijacked() { rrw.hijacked = true }
+
+// beforeFlush satisfies tapWriter. This is a placeholder for Task 5; Task 7
+// will implement the actual flush logic.
+func (rrw *recoverResponseWriter) beforeFlush() {
+	// placeholder: no-op for now
+}
 
 // flushTo copies the buffered headers, status, and body to the real writer on
 // the clean (no-panic) path. If next never called WriteHeader, no explicit
@@ -204,4 +210,4 @@ func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
 }
 
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
-var _ hijackMarker = (*recoverResponseWriter)(nil)
+var _ tapWriter = (*recoverResponseWriter)(nil)

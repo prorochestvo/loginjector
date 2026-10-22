@@ -69,6 +69,9 @@ func newInterceptorWithConfig(w http.ResponseWriter, r *http.Request, cfg payloa
 // the http.Hijacker interface. Once hijacked, the trailing flush guard in
 // NewPayloadHandlerWithOptions skips Flush() on the original ResponseWriter to
 // avoid calling Flush on an already-hijacked connection.
+//
+// The wroteHeader field tracks whether a final status code has been recorded
+// (by WriteHeader, Write, or Flush).
 type interceptor struct {
 	code              int
 	payload           *bytes.Buffer
@@ -76,6 +79,7 @@ type interceptor struct {
 	request           *http.Request
 	cfg               payloadConfig
 	hijacked          bool
+	wroteHeader       bool
 	responseTruncated bool
 	// requestCap, when non-nil, is the cappedWriter used to bound the request
 	// body log; its truncated field indicates whether bytes were discarded.
@@ -92,6 +96,9 @@ func (i *interceptor) Write(b []byte) (int, error) {
 		// defense-in-depth: newInterceptorWithConfig already seeds 200, but guard against
 		// zero in case interceptor is constructed in tests.
 		i.code = http.StatusOK
+	}
+	if !i.wroteHeader {
+		i.wroteHeader = true
 	}
 
 	// buffer the response for logging, respecting the per-handler cap.
@@ -125,9 +132,19 @@ func (i *interceptor) Write(b []byte) (int, error) {
 }
 
 // WriteHeader overrides http.ResponseWriter.WriteHeader to capture the HTTP
-// status code.
+// status code. Informational responses (100-199 except 101) are forwarded
+// without recording. The first final status is recorded; later calls are
+// forwarded to the underlying writer (which reports the superfluous call).
 func (i *interceptor) WriteHeader(statusCode int) {
-	i.code = statusCode
+	if isInformational(statusCode) {
+		// forward 1xx without recording
+		i.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
+	if !i.wroteHeader {
+		i.code = statusCode
+		i.wroteHeader = true
+	}
 	i.ResponseWriter.WriteHeader(statusCode)
 }
 
@@ -229,3 +246,6 @@ func (c *cappedWriter) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
+
+var _ http.ResponseWriter = (*interceptor)(nil)
+var _ tapWriter = (*interceptor)(nil)

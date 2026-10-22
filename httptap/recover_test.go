@@ -15,7 +15,7 @@ import (
 
 // compile-time assertions for recoverResponseWriter.
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
-var _ hijackMarker = (*recoverResponseWriter)(nil)
+var _ tapWriter = (*recoverResponseWriter)(nil)
 
 // newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
 func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
