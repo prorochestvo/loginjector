@@ -485,6 +485,34 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 
 		require.NotContains(t, b.String(), authToken, "X-Auth-Token in response must be redacted")
 	})
+
+	t.Run("default_query_token_redacted", func(t *testing.T) {
+		t.Parallel()
+
+		token := uniqueToken()
+		h, b := newHandler(t, WithSummaryWriter(io.Discard))
+		req := httptest.NewRequest(http.MethodGet, "/x?access_token="+token+"&page=2", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.NotContains(t, b.String(), token, "access_token must be redacted")
+		require.Contains(t, b.String(), "access_token=[REDACTED]", "redaction marker must appear")
+		require.Contains(t, b.String(), "page=2", "non-redacted param must be visible")
+	})
+
+	t.Run("custom_query_param_redacted", func(t *testing.T) {
+		t.Parallel()
+
+		token := uniqueToken()
+		h, b := newHandler(t, WithRedactQueryParams("Sig"), WithSummaryWriter(io.Discard))
+		req := httptest.NewRequest(http.MethodGet, "/x?sig="+token+"&id=123", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.NotContains(t, b.String(), token, "sig must be redacted")
+		require.Contains(t, b.String(), "sig=[REDACTED]", "redaction marker must appear")
+		require.Contains(t, b.String(), "id=123", "non-redacted param must be visible")
+	})
 }
 
 // TestSummaryWriter exercises WithSummaryWriter in full.

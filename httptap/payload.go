@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,9 @@ type payloadConfig struct {
 	// redactHeaders is lowercase-folded via redactKey(); always contains
 	// the built-in sensitive set and may contain caller-supplied additions.
 	redactHeaders map[string]struct{}
+	// redactQueryParams holds lowercase parameter names to redact; always contains
+	// the built-in set (access_token, refresh_token, etc.) and may contain caller-supplied.
+	redactQueryParams map[string]struct{}
 	// summaryWriter, when non-nil, overrides os.Stdout for the per-request summary line
 	// for this handler only.
 	summaryWriter io.Writer
@@ -32,16 +36,21 @@ type payloadConfig struct {
 const defaultMaxBody = 64 << 10 // 65536
 
 // defaultPayloadConfig returns the baseline config: 64 KiB body-capture cap,
-// fixed redaction set, os.Stdout summary.
+// fixed redaction sets, os.Stdout summary.
 func defaultPayloadConfig() payloadConfig {
 	m := make(map[string]struct{}, len(defaultRedactHeaders))
 	for _, h := range defaultRedactHeaders {
 		m[redactKey(h)] = struct{}{}
 	}
+	q := make(map[string]struct{}, len(defaultRedactQueryParams))
+	for name := range defaultRedactQueryParams {
+		q[strings.ToLower(name)] = struct{}{}
+	}
 	return payloadConfig{
-		maxRequestBody:  defaultMaxBody,
-		maxResponseBody: defaultMaxBody,
-		redactHeaders:   m,
+		maxRequestBody:    defaultMaxBody,
+		maxResponseBody:   defaultMaxBody,
+		redactHeaders:     m,
+		redactQueryParams: q,
 	}
 }
 
@@ -93,6 +102,18 @@ func WithRedactHeaders(names ...string) PayloadOption {
 	}
 }
 
+// WithRedactQueryParams adds query parameter names to the redaction set used
+// when logging request URIs. The default set (access_token, refresh_token,
+// id_token, client_secret, api_key, apikey, password) is always present and
+// cannot be removed; this option is additive only. Matching is case-insensitive.
+func WithRedactQueryParams(names ...string) PayloadOption {
+	return func(c *payloadConfig) {
+		for _, n := range names {
+			c.redactQueryParams[strings.ToLower(strings.TrimSpace(n))] = struct{}{}
+		}
+	}
+}
+
 // WithSummaryWriter sets a per-handler destination for the one-line timing/size
 // summary. When set, this writer takes precedence over the default os.Stdout.
 // Pass io.Discard to silence the summary for this handler only without affecting
@@ -118,8 +139,8 @@ func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, n
 
 // NewPayloadHandlerWithOptions creates an HTTP middleware handler like
 // NewPayloadHandler but accepts functional options to tune body-capture limits,
-// header redaction, and the summary destination. Calling it with no options
-// produces byte-identical logger output and the same stdout summary as
+// header and query redaction, and the summary destination. Calling it with no
+// options produces byte-identical logger output and the same stdout summary as
 // NewPayloadHandler.
 //
 // A nil logger or nextFunc is a programmer error and panics.
@@ -128,6 +149,7 @@ func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, n
 //   - WithMaxRequestBody / WithMaxResponseBody — cap or disable body buffering.
 //   - WithoutBodies — disable both request and response body capture.
 //   - WithRedactHeaders — add header names to the always-on redaction set.
+//   - WithRedactQueryParams — add query parameter names to the always-on redaction set.
 //   - WithSummaryWriter — override the summary destination for this handler only.
 func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.LogLevel, nextFunc http.HandlerFunc, opts ...PayloadOption) http.HandlerFunc {
 	if logger == nil {

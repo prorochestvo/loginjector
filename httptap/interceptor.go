@@ -134,7 +134,7 @@ func (i *interceptor) WriteHeader(statusCode int) {
 // bytes assembles the logged representation of the intercepted request and
 // response using cfg for redaction and body-cap settings.
 func (i *interceptor) bytes(cfg payloadConfig) []byte {
-	requestRawQuery := i.request.URL.RawQuery
+	requestRawQuery := redactRawQuery(i.request.URL.RawQuery, cfg.redactQueryParams)
 	if requestRawQuery != "" {
 		requestRawQuery = "?" + requestRawQuery
 	}
