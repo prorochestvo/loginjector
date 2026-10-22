@@ -41,7 +41,7 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		method := r.Method
-		path := r.URL.Path
+		path := escapeControl(r.URL.Path)
 		start := time.Now()
 
 		arw := &accessResponseWriter{ResponseWriter: w}

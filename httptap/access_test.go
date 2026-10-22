@@ -318,6 +318,33 @@ func TestNewAccessHandler(t *testing.T) {
 		}
 		wg.Wait()
 	})
+
+	t.Run("path_newline_does_not_split_line", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}
+		h := NewAccessHandler(&buf, next)
+
+		// Create a request with a newline in the path (percent-encoded)
+		req := httptest.NewRequest(http.MethodGet, "/a%0A2026-01-01T00:00:00Z%20[200]%20GET%20/admin", nil)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+
+		output := buf.String()
+		// Count newlines: should be exactly one (the terminator)
+		newlineCount := 0
+		for _, c := range output {
+			if c == '\n' {
+				newlineCount++
+			}
+		}
+		require.Equal(t, 1, newlineCount, "output should contain exactly one newline (the terminator)")
+		// The escaped path should be in the output
+		require.Contains(t, output, "%0A")
+	})
 }
 
 // BenchmarkNewAccessHandler measures per-request allocations on the steady-state

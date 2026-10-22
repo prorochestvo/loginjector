@@ -136,9 +136,9 @@ func (i *interceptor) WriteHeader(statusCode int) {
 func (i *interceptor) bytes(cfg payloadConfig) []byte {
 	requestRawQuery := redactRawQuery(i.request.URL.RawQuery, cfg.redactQueryParams)
 	if requestRawQuery != "" {
-		requestRawQuery = "?" + requestRawQuery
+		requestRawQuery = "?" + escapeControl(requestRawQuery)
 	}
-	requestHead := fmt.Sprintf("%s %s%s\n", i.request.Method, i.request.URL.Path, requestRawQuery)
+	requestHead := fmt.Sprintf("%s %s%s\n", i.request.Method, escapeControl(i.request.URL.Path), requestRawQuery)
 	requestHeadersAsString := strings.TrimSpace(headerToStringWithRedact(&i.request.Header, cfg.redactHeaders))
 	responseHead := fmt.Sprintf("%s %d %s\n", i.request.Proto, i.code, http.StatusText(i.code))
 	responseHeaders := i.Header()

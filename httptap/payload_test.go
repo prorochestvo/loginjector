@@ -513,6 +513,48 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 		require.Contains(t, b.String(), "sig=[REDACTED]", "redaction marker must appear")
 		require.Contains(t, b.String(), "id=123", "non-redacted param must be visible")
 	})
+
+	t.Run("path_newline_escaped_in_dump", func(t *testing.T) {
+		t.Parallel()
+
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			w.WriteHeader(http.StatusOK)
+		}, WithSummaryWriter(io.Discard))
+
+		req := httptest.NewRequest(http.MethodGet, "/a%0Ab", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		output := b.String()
+		require.Contains(t, output, "%0A", "newline should be escaped in the dump")
+		// The request line should have %0A instead of a raw newline
+		requestLine := strings.Split(output, "\n")[0]
+		require.NotContains(t, requestLine, "/a\nb")
+	})
+
+	t.Run("path_newline_escaped_in_summary", func(t *testing.T) {
+		t.Parallel()
+
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		summary := bytes.NewBufferString("")
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			w.WriteHeader(http.StatusOK)
+		}, WithSummaryWriter(summary))
+
+		req := httptest.NewRequest(http.MethodGet, "/a%0Ab", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		summaryOutput := summary.String()
+		// The summary should have exactly one newline (the terminator)
+		require.Equal(t, 1, strings.Count(summaryOutput, "\n"), "summary should be one line")
+		require.Contains(t, summaryOutput, "%0A", "newline should be escaped in summary")
+	})
 }
 
 // TestSummaryWriter exercises WithSummaryWriter in full.

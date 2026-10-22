@@ -172,6 +172,7 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 			payloadSize := i.payload.Len()
 			responseSize := i.response.Len()
 			responseCode := i.code
+			escapedPath := escapeControl(r.URL.Path)
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)
@@ -192,7 +193,7 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 			_, _ = fmt.Fprintf(sw, "[%d] %s %s: %0.3f msec; ↓%0.2fKb; ↑%0.2fKb;\n",
 				responseCode,
 				r.Method,
-				r.URL.Path,
+				escapedPath,
 				float64(elapsed)/1000000,
 				float64(payloadSize)/1024,
 				float64(responseSize)/1024,
