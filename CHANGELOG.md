@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `TelegramHandler` now wraps its multipart-construction errors with `%w` instead of `%s`.
+  The error messages are byte-identical; `errors.Is`/`errors.As` can now reach the
+  underlying error. Errors that carry the redacted bot-token URL are unchanged and still
+  do not wrap the original error.
+- The whole tree passes the adopted golangci-lint configuration (`make lint`). Production
+  changes are behaviour-preserving (octal literals, `errors.New` for constant messages,
+  `http.NewRequestWithContext`, declaration order, removal of the unused internal
+  `newInterceptor`). Tests run in parallel where isolated; tests that touch process-global
+  state stay serial with a recorded reason.
+
+### Fixed
+
+- `TestRotatingFileHandlerForRaceCondition` joined errors from several goroutines without a
+  lock, and `TestFileByFormatHandlerForRaceCondition` called `require` off the test
+  goroutine; both are corrected. `TestLogger_Write` now restores the std `log` output.
+
 ## [1.0.9] - 2026-07-22
 
 ### Security

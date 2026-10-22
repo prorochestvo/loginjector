@@ -437,14 +437,10 @@ var runtimeDetailsFrozen atomic.Bool
 // runtimeDetailsExtraMu without data-racing against a concurrent Do in flight:
 // the goroutine that already grabbed the old *sync.Once runs its Do to completion
 // against the orphaned instance; the new *sync.Once starts fresh for the next call.
-var runtimeDetails struct {
+var runtimeDetails = struct {
 	once  *sync.Once
 	value string
-}
-
-func init() {
-	runtimeDetails.once = &sync.Once{}
-}
+}{once: &sync.Once{}}
 
 // cachedRuntime returns the process-wide runtime descriptor, computing it exactly
 // once regardless of how many StackTraceError values are created.

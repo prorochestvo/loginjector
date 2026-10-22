@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +22,7 @@ type probe struct{ buf bytes.Buffer }
 func (p *probe) Write(b []byte) (int, error) { return p.buf.Write(b) }
 func (p *probe) String() string              { return p.buf.String() }
 
+//nolint:paralleltest,tparallel // subtests swap the std log output and share os.TempDir()/logs
 func TestNewFileLogger(t *testing.T) {
 	const minLevel LogLevel = 1 // use a raw level to keep this independent of the levels package
 
@@ -74,7 +74,7 @@ func TestNewFileLogger(t *testing.T) {
 		require.NotNil(t, l)
 
 		// write enough bytes to force a rollover
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			_, err = l.WriteLog(minLevel, []byte(fmt.Sprintf("msg%d_padding", i)))
 			require.NoError(t, err)
 		}
@@ -135,7 +135,6 @@ func TestNewFileLogger(t *testing.T) {
 
 		dir := t.TempDir()
 		for _, badPrefix := range []string{"../evil", "sub/dir", "a/b/c"} {
-			badPrefix := badPrefix
 			t.Run(badPrefix, func(t *testing.T) {
 				t.Parallel()
 				l, err := NewFileLogger(dir, badPrefix, minLevel)
@@ -151,7 +150,6 @@ func TestNewFileLogger(t *testing.T) {
 
 		dir := t.TempDir()
 		for _, badPrefix := range []string{".", ".."} {
-			badPrefix := badPrefix
 			t.Run(badPrefix, func(t *testing.T) {
 				t.Parallel()
 				l, err := NewFileLogger(dir, badPrefix, minLevel)
@@ -260,7 +258,7 @@ func TestNewFileLogger(t *testing.T) {
 		require.NoError(t, err)
 		_, err = l.WriteLog(minLevel, []byte("check printer"))
 		require.NoError(t, err)
-		require.True(t, strings.Contains(p.String(), "check printer"),
+		require.Contains(t, p.String(), "check printer",
 			"printer must receive the message via forwarded options")
 	})
 }
@@ -410,6 +408,7 @@ func TestNewFileLogger_WithPrinterMinLevel(t *testing.T) {
 // forwarders added for lumberjack parity: they must reach the underlying
 // RotatingFileHandler while WithStableCurrentName is deliberately not exposed here.
 func TestNewFileLogger_RotationOptions(t *testing.T) {
+	t.Parallel()
 	const minLevel LogLevel = 1
 
 	t.Run("WithFileCompression forwards compression", func(t *testing.T) {
@@ -420,7 +419,7 @@ func TestNewFileLogger_RotationOptions(t *testing.T) {
 			WithoutPrinter(), WithMaxFileCapacity(20), WithMaxFilesInFolder(50), WithFileCompression())
 		require.NoError(t, err)
 
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			_, err = l.WriteLog(minLevel, []byte(fmt.Sprintf("padding-message-%d", i)))
 			require.NoError(t, err)
 		}
@@ -442,7 +441,7 @@ func TestNewFileLogger_RotationOptions(t *testing.T) {
 		require.NoError(t, err)
 
 		// each stamped line exceeds 20 bytes, so every write rotates: three backups form.
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			_, err = l.WriteLog(minLevel, []byte(fmt.Sprintf("msg%d-padding-xxxxx", i)))
 			require.NoError(t, err)
 		}
@@ -451,7 +450,7 @@ func TestNewFileLogger_RotationOptions(t *testing.T) {
 
 		// more writes rotate again and run the age prune (count bound is 100, so age is
 		// the only pressure).
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			_, err = l.WriteLog(minLevel, []byte(fmt.Sprintf("more%d-padding-xxxxx", i)))
 			require.NoError(t, err)
 		}

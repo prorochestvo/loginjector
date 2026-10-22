@@ -40,7 +40,7 @@ func TestNewPayloadHandler(t *testing.T) {
 			w.Header().Set("RESPONSE_ID", responseID)
 			_, _ = w.Write([]byte(response))
 			_, _ = w.Write([]byte("--"))
-			_, _ = w.Write([]byte(fmt.Sprintf("PAYLOAD_%d", len(payload))))
+			_, _ = fmt.Fprintf(w, "PAYLOAD_%d", len(payload))
 		}
 
 		h := NewPayloadHandler(l, logLevelInfo, httpStatusOK)
@@ -142,7 +142,7 @@ func TestNewPayloadHandler(t *testing.T) {
 		t.Parallel()
 
 		require.PanicsWithValue(t, "httptap: logger is nil", func() {
-			NewPayloadHandler(nil, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {})
+			NewPayloadHandler(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
 
@@ -177,7 +177,7 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 		t.Parallel()
 
 		require.PanicsWithValue(t, "httptap: logger is nil", func() {
-			NewPayloadHandlerWithOptions(nil, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {})
+			NewPayloadHandlerWithOptions(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
 
@@ -345,6 +345,7 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 	})
 
 	t.Run("body_cap_race_condition", func(t *testing.T) {
+		t.Parallel()
 		// run many concurrent requests through a bounded-cap handler to verify no data race.
 		// WithSummaryWriter(io.Discard) ensures this parallel subtest never touches
 		// os.Stdout, preventing a race with other tests.
@@ -359,7 +360,7 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 		const concurrency = 20
 		var wg sync.WaitGroup
 		wg.Add(concurrency)
-		for idx := 0; idx < concurrency; idx++ {
+		for range concurrency {
 			go func() {
 				defer wg.Done()
 				payload := strings.Repeat("x", 64)
@@ -447,6 +448,8 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 // summary writer that required serialisation to avoid races. The global is gone
 // (Variant B), but we keep the non-parallel discipline here as a safety margin
 // since these subtests do share os.Stdout as the default fallback destination.
+//
+//nolint:paralleltest // subtests share os.Stdout as the default summary destination
 func TestSummaryWriter(t *testing.T) {
 	// newSummaryHandler is a local helper: builds a handler backed by a fresh logger.
 	newSummaryHandler := func(t *testing.T, opts ...PayloadOption) (http.HandlerFunc, *bytes.Buffer) {
@@ -534,7 +537,7 @@ func ExampleNewPayloadHandlerWithOptions() {
 	const LevelInfo loginjector.LogLevel = 1
 
 	logger := loginjector.NewLogger(LevelInfo)
-	myHttpHandler := func(w http.ResponseWriter, r *http.Request) {
+	myHttpHandler := func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}
 	_ = NewPayloadHandlerWithOptions(

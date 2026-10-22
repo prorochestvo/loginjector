@@ -60,6 +60,7 @@ func NewRecoverHandler(
 		defer func() {
 			pv := recover()
 			if pv != nil {
+				//nolint:errorlint // recover value compared by identity, matching net/http's ErrAbortHandler handling
 				if pv == http.ErrAbortHandler {
 					panic(pv) // re-panic silently per stdlib convention.
 				}

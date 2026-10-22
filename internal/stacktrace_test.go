@@ -28,7 +28,7 @@ func TestStackTrace(t *testing.T) {
 			"stack dump must be trimmed of surrounding whitespace")
 	})
 
-	t.Run("agrees with a same-goroutine debug.Stack capture", func(t *testing.T) {
+	t.Run("agrees with a same-goroutine debug.Stack capture", func(t *testing.T) { //nolint:paralleltest // both stack captures must run on the same goroutine
 		// not parallel: both captures must run on this same goroutine so the
 		// goroutine header and caller frame are directly comparable.
 		got := StackTrace()
@@ -72,7 +72,7 @@ func TestLineTrace(t *testing.T) {
 	t.Run("returns empty on invalid skip", func(t *testing.T) {
 		t.Parallel()
 		result := LineTrace(1 << 20)
-		require.Equal(t, "", result)
+		require.Empty(t, result)
 	})
 
 	t.Run("resolves own frame on skip=0", func(t *testing.T) {

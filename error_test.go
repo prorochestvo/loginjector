@@ -15,6 +15,7 @@ import (
 )
 
 func TestHttpError(t *testing.T) {
+	t.Parallel()
 	key1 := "KEY_1"
 	key2 := "KEY_2"
 	key3 := "KEY_3"
@@ -39,11 +40,12 @@ func TestHttpError(t *testing.T) {
 	require.NotContains(t, err.Error(), key3)
 
 	var httpErr HttpError
-	require.Equal(t, true, errors.As(err, &httpErr), "could not convert error to httpCode")
+	require.ErrorAs(t, err, &httpErr, "could not convert error to httpCode")
 	require.Equal(t, http.StatusInternalServerError, httpErr.StatusCode(), "unexpected status code")
 }
 
 func TestFullTrace(t *testing.T) {
+	t.Parallel()
 	key1 := "KEY_1"
 	key2 := "KEY_2"
 	key3 := "KEY_3"
@@ -68,7 +70,7 @@ func TestFullTrace(t *testing.T) {
 	require.NotContains(t, err.Error(), key3)
 
 	var traceErr TraceError
-	require.Equal(t, errors.As(err, &traceErr), true, "could not convert error to fullTrace")
+	require.ErrorAs(t, err, &traceErr, "could not convert error to fullTrace")
 	require.Contains(t, traceErr.Line(), "error_test.go:", "unexpected status code")
 	require.Contains(t, traceErr.Line(), "TestFullTrace", "unexpected status code")
 }
@@ -84,7 +86,7 @@ func TestNewTraceErrorf(t *testing.T) {
 	t.Run("line points at call site", func(t *testing.T) {
 		t.Parallel()
 		var traceErr TraceError
-		require.True(t, errors.As(errForLine, &traceErr))
+		require.ErrorAs(t, errForLine, &traceErr)
 		assert.Contains(t, traceErr.Line(), "error_test.go:")
 		assert.Contains(t, traceErr.Line(), "TestNewTraceErrorf")
 	})
@@ -99,11 +101,11 @@ func TestNewTraceErrorf(t *testing.T) {
 		t.Parallel()
 		cause := errors.New("root cause")
 		err := NewTraceErrorf("wrapper: %w", cause)
-		assert.True(t, errors.Is(err, cause))
+		require.ErrorIs(t, err, cause)
 		// unwrap once reaches the fmt.Errorf result which itself wraps cause
 		unwrapped := errors.Unwrap(err)
-		require.NotNil(t, unwrapped)
-		assert.True(t, errors.Is(unwrapped, cause))
+		require.Error(t, unwrapped)
+		assert.ErrorIs(t, unwrapped, cause)
 	})
 
 	t.Run("no percent-w gives nil Unwrap from fmt.Errorf result", func(t *testing.T) {
@@ -111,8 +113,8 @@ func TestNewTraceErrorf(t *testing.T) {
 		err := NewTraceErrorf("plain message %d", 1)
 		// the inner fmt.Errorf result has no wrapped error, so chain stops there
 		inner := errors.Unwrap(err)
-		require.NotNil(t, inner) // the fmt.Errorf result itself
-		assert.Nil(t, errors.Unwrap(inner))
+		require.Error(t, inner) // the fmt.Errorf result itself
+		assert.NoError(t, errors.Unwrap(inner))
 	})
 
 	t.Run("errors.Join interop", func(t *testing.T) {
@@ -121,13 +123,13 @@ func TestNewTraceErrorf(t *testing.T) {
 		err := NewTraceErrorf("wrapped: %w", cause)
 		joined := errors.Join(err, errors.New("other"))
 		var traceErr TraceError
-		assert.True(t, errors.As(joined, &traceErr))
-		assert.True(t, errors.Is(joined, cause))
+		require.ErrorAs(t, joined, &traceErr)
+		assert.ErrorIs(t, joined, cause)
 	})
 
 	t.Run("satisfies TraceError interface", func(t *testing.T) {
 		t.Parallel()
-		var te TraceError = NewTraceErrorf("check")
+		var te = NewTraceErrorf("check")
 		assert.NotEmpty(t, te.Line())
 		assert.NotEmpty(t, te.Error())
 	})
@@ -143,7 +145,7 @@ func TestWrapTraceError(t *testing.T) {
 	t.Run("line points at call site", func(t *testing.T) {
 		t.Parallel()
 		var traceErr TraceError
-		require.True(t, errors.As(errForLine, &traceErr))
+		require.ErrorAs(t, errForLine, &traceErr)
 		assert.Contains(t, traceErr.Line(), "error_test.go:")
 		assert.Contains(t, traceErr.Line(), "TestWrapTraceError")
 	})
@@ -153,7 +155,7 @@ func TestWrapTraceError(t *testing.T) {
 		cause := errors.New("underlying")
 		err := WrapTraceError(cause, "description")
 		assert.Equal(t, cause, errors.Unwrap(err))
-		assert.True(t, errors.Is(err, cause))
+		assert.ErrorIs(t, err, cause)
 	})
 
 	t.Run("errors.As traverses to typed cause", func(t *testing.T) {
@@ -161,14 +163,14 @@ func TestWrapTraceError(t *testing.T) {
 		httpCause := NewHttpError(http.StatusForbidden)
 		err := WrapTraceError(httpCause, "forbidden path")
 		var httpErr HttpError
-		require.True(t, errors.As(err, &httpErr))
+		require.ErrorAs(t, err, &httpErr)
 		assert.Equal(t, http.StatusForbidden, httpErr.StatusCode())
 	})
 
 	t.Run("nil cause is safe", func(t *testing.T) {
 		t.Parallel()
 		err := WrapTraceError(nil, "no cause here")
-		assert.Nil(t, errors.Unwrap(err))
+		require.NoError(t, errors.Unwrap(err))
 		assert.Contains(t, err.Error(), "no cause here")
 	})
 
@@ -187,8 +189,8 @@ func TestWrapTraceError(t *testing.T) {
 		err := WrapTraceError(cause, "join test")
 		joined := errors.Join(err, errors.New("other"))
 		var traceErr TraceError
-		assert.True(t, errors.As(joined, &traceErr))
-		assert.True(t, errors.Is(joined, cause))
+		require.ErrorAs(t, joined, &traceErr)
+		assert.ErrorIs(t, joined, cause)
 	})
 
 	t.Run("empty message does not produce a double separator", func(t *testing.T) {
@@ -210,7 +212,7 @@ func TestNewStackTraceError(t *testing.T) {
 		t.Parallel()
 		err := NewStackTraceError()
 		stack := err.Stack()
-		assert.True(t, strings.Count(stack, "\n") > 1, "stack should be multiline")
+		assert.Greater(t, strings.Count(stack, "\n"), 1, "stack should be multiline")
 		assert.Contains(t, stack, "TestNewStackTraceError")
 	})
 
@@ -227,10 +229,8 @@ func TestNewStackTraceError(t *testing.T) {
 		t.Parallel()
 		e1 := NewStackTraceError()
 		e2 := NewStackTraceError()
-		// pointer equality confirms the same string value was reused (same intern or same pointer via sync.Once)
+		// value equality only: both errors report the same cached runtime descriptor.
 		assert.Equal(t, e1.Runtime(), e2.Runtime())
-		// additionally confirm it is the same underlying string by value
-		assert.True(t, e1.Runtime() == e2.Runtime())
 	})
 
 	t.Run("Error is empty for no-message variant", func(t *testing.T) {
@@ -242,7 +242,7 @@ func TestNewStackTraceError(t *testing.T) {
 	t.Run("Unwrap returns nil for non-wrapping constructor", func(t *testing.T) {
 		t.Parallel()
 		err := NewStackTraceError()
-		assert.Nil(t, errors.Unwrap(err))
+		assert.NoError(t, errors.Unwrap(err))
 	})
 
 	t.Run("NewStackTraceErrorf message in Error", func(t *testing.T) {
@@ -250,8 +250,8 @@ func TestNewStackTraceError(t *testing.T) {
 		err := NewStackTraceErrorf("disk at %d%%", 95)
 		assert.Contains(t, err.Error(), "disk at 95%")
 		assert.NotContains(t, err.Error(), "\n") // Error() must not embed the full stack
-		assert.True(t, strings.Count(err.Stack(), "\n") > 1)
-		assert.Nil(t, errors.Unwrap(err))
+		assert.Greater(t, strings.Count(err.Stack(), "\n"), 1)
+		assert.NoError(t, errors.Unwrap(err))
 	})
 
 	t.Run("WrapStackTraceError Unwrap and Is", func(t *testing.T) {
@@ -261,14 +261,14 @@ func TestNewStackTraceError(t *testing.T) {
 		assert.Contains(t, err.Error(), "storage failure")
 		assert.Contains(t, err.Error(), "disk full")
 		assert.Equal(t, cause, errors.Unwrap(err))
-		assert.True(t, errors.Is(err, cause))
+		assert.ErrorIs(t, err, cause)
 	})
 
 	t.Run("WrapStackTraceError nil cause is safe", func(t *testing.T) {
 		t.Parallel()
 		err := WrapStackTraceError(nil, "message only")
 		assert.Equal(t, "message only", err.Error())
-		assert.Nil(t, errors.Unwrap(err))
+		assert.NoError(t, errors.Unwrap(err))
 	})
 
 	t.Run("errors.Join interop", func(t *testing.T) {
@@ -277,8 +277,8 @@ func TestNewStackTraceError(t *testing.T) {
 		err := WrapStackTraceError(cause, "wrap")
 		joined := errors.Join(err, errors.New("other"))
 		var stackErr StackTraceError
-		assert.True(t, errors.As(joined, &stackErr))
-		assert.True(t, errors.Is(joined, cause))
+		require.ErrorAs(t, joined, &stackErr)
+		assert.ErrorIs(t, joined, cause)
 	})
 
 	t.Run("runtime caching is race-free", func(t *testing.T) {
@@ -290,13 +290,13 @@ func TestNewStackTraceError(t *testing.T) {
 		const n = 20
 		results := make([]string, n)
 		done := make(chan struct{})
-		for i := 0; i < n; i++ {
+		for i := range n {
 			go func(idx int) {
 				results[idx] = NewStackTraceError().Runtime()
 				done <- struct{}{}
 			}(i)
 		}
-		for i := 0; i < n; i++ {
+		for range n {
 			<-done
 		}
 		for i := 1; i < n; i++ {
@@ -331,7 +331,7 @@ func TestPublicError(t *testing.T) {
 		cause := errors.New("underlying")
 		err := NewPublicError("public", cause)
 		assert.Equal(t, cause, errors.Unwrap(err))
-		assert.True(t, errors.Is(err, cause))
+		assert.ErrorIs(t, err, cause)
 	})
 
 	t.Run("nil cause is safe", func(t *testing.T) {
@@ -339,7 +339,7 @@ func TestPublicError(t *testing.T) {
 		err := NewPublicError("public only", nil)
 		assert.Equal(t, "public only", err.PublicMessage())
 		assert.Equal(t, "public only", err.Error())
-		assert.Nil(t, errors.Unwrap(err))
+		assert.NoError(t, errors.Unwrap(err))
 	})
 
 	t.Run("empty public message stays empty and does not leak cause", func(t *testing.T) {
@@ -357,7 +357,7 @@ func TestPublicError(t *testing.T) {
 		httpCause := NewHttpError(http.StatusUnauthorized)
 		err := NewPublicError("unauthorized", httpCause)
 		var httpErr HttpError
-		require.True(t, errors.As(err, &httpErr))
+		require.ErrorAs(t, err, &httpErr)
 		assert.Equal(t, http.StatusUnauthorized, httpErr.StatusCode())
 	})
 
@@ -367,7 +367,7 @@ func TestPublicError(t *testing.T) {
 		err := NewPublicError("public", cause)
 		joined := errors.Join(err, errors.New("other"))
 		var pubErr PublicError
-		assert.True(t, errors.As(joined, &pubErr))
+		require.ErrorAs(t, joined, &pubErr)
 		assert.Equal(t, "public", pubErr.PublicMessage())
 	})
 
@@ -383,11 +383,11 @@ func TestPublicError(t *testing.T) {
 
 		// errors.As reaches HttpError
 		var httpErr HttpError
-		require.True(t, errors.As(pubErr, &httpErr))
+		require.ErrorAs(t, pubErr, &httpErr)
 		assert.Equal(t, http.StatusNotFound, httpErr.StatusCode())
 
 		// errors.Is reaches the original cause
-		assert.True(t, errors.Is(pubErr, cause))
+		assert.ErrorIs(t, pubErr, cause)
 	})
 }
 
@@ -426,7 +426,7 @@ func TestNewPublicErrorDetails(t *testing.T) {
 	t.Run("nil cause: Unwrap returns nil", func(t *testing.T) {
 		t.Parallel()
 		err := NewPublicErrorDetails("x")
-		assert.Nil(t, errors.Unwrap(err))
+		assert.NoError(t, errors.Unwrap(err))
 	})
 
 	t.Run("satisfies PublicError interface", func(t *testing.T) {
@@ -440,7 +440,7 @@ func TestNewPublicErrorDetails(t *testing.T) {
 		err := NewPublicErrorDetails("not", "found")
 		joined := errors.Join(err, errors.New("other"))
 		var pde PublicDetailsError
-		require.True(t, errors.As(joined, &pde))
+		require.ErrorAs(t, joined, &pde)
 		assert.Equal(t, "not found", pde.Details())
 	})
 }
@@ -463,6 +463,8 @@ func resetRuntimeCacheForTest() {
 // These tests are NOT parallel at the top level because they mutate shared
 // process-wide state (runtimeDetails.once / runtimeDetailsExtraProvider).
 // Each subtest resets the state via t.Cleanup(resetRuntimeCacheForTest).
+//
+//nolint:paralleltest // mutates the process-wide runtime-details cache and provider
 func TestSetRuntimeDetailsProvider(t *testing.T) {
 	t.Run("no_provider_default", func(t *testing.T) {
 		t.Cleanup(resetRuntimeCacheForTest)
@@ -524,7 +526,7 @@ func TestSetRuntimeDetailsProvider(t *testing.T) {
 		const n = 100
 		results := make([]string, n)
 		var wg sync.WaitGroup
-		for i := 0; i < n; i++ {
+		for i := range n {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -589,7 +591,7 @@ func TestWrapHttpError(t *testing.T) {
 		t.Parallel()
 		err := WrapHttpError(http.StatusTeapot, errors.New("cause"))
 		var httpErr HttpError
-		require.True(t, errors.As(err, &httpErr))
+		require.ErrorAs(t, err, &httpErr)
 		assert.Equal(t, http.StatusTeapot, httpErr.StatusCode())
 	})
 
@@ -606,7 +608,7 @@ func TestWrapHttpError(t *testing.T) {
 		cause := errors.New("root")
 		err := WrapHttpError(http.StatusBadGateway, cause)
 		assert.Equal(t, cause, errors.Unwrap(err))
-		assert.True(t, errors.Is(err, cause))
+		assert.ErrorIs(t, err, cause)
 	})
 
 	t.Run("nil cause behaves like NewHttpError", func(t *testing.T) {
@@ -616,7 +618,7 @@ func TestWrapHttpError(t *testing.T) {
 		wrapped := WrapHttpError(code, nil)
 		assert.Equal(t, plain.Error(), wrapped.Error())
 		assert.Equal(t, plain.StatusCode(), wrapped.StatusCode())
-		assert.Nil(t, errors.Unwrap(wrapped))
+		assert.NoError(t, errors.Unwrap(wrapped))
 	})
 
 	t.Run("unknown code does not produce empty Error", func(t *testing.T) {
@@ -631,7 +633,7 @@ func TestWrapHttpError(t *testing.T) {
 		cause := errors.New("cause")
 		err := WrapHttpError(http.StatusForbidden, cause)
 		var httpErr HttpError
-		require.True(t, errors.As(err, &httpErr))
+		require.ErrorAs(t, err, &httpErr)
 		assert.Equal(t, http.StatusForbidden, httpErr.StatusCode())
 	})
 
@@ -641,8 +643,8 @@ func TestWrapHttpError(t *testing.T) {
 		err := WrapHttpError(http.StatusConflict, cause)
 		joined := errors.Join(err, errors.New("other"))
 		var httpErr HttpError
-		assert.True(t, errors.As(joined, &httpErr))
-		assert.True(t, errors.Is(joined, cause))
+		require.ErrorAs(t, joined, &httpErr)
+		assert.ErrorIs(t, joined, cause)
 	})
 
 	t.Run("existing TestHttpError style assertion still holds for new type", func(t *testing.T) {
@@ -661,6 +663,7 @@ func TestWrapHttpError(t *testing.T) {
 // runtime.Caller(0) one line below each constructor (a fixed 1-line offset, no rot-prone
 // literal): gofmt keeps the two statements on adjacent lines.
 func TestNewTraceError(t *testing.T) {
+	t.Parallel()
 	te := NewTraceError()
 	_, file, teAnchor, _ := runtime.Caller(0) // one line below the constructor above
 	teLine := teAnchor - 1
@@ -731,6 +734,8 @@ func TestStackTraceError_StackRedacted(t *testing.T) {
 // TestRuntimeDetailsFrozen covers the freeze-state probe. It is NOT parallel at the top
 // level because it mutates process-wide runtime-details state shared with
 // TestSetRuntimeDetailsProvider; each subtest resets that state first.
+//
+//nolint:paralleltest // mutates the process-wide runtime-details cache and provider
 func TestRuntimeDetailsFrozen(t *testing.T) {
 	t.Run("false before first construction, true after", func(t *testing.T) {
 		resetRuntimeCacheForTest()
@@ -748,7 +753,7 @@ func TestRuntimeDetailsFrozen(t *testing.T) {
 		t.Cleanup(resetRuntimeCacheForTest)
 
 		var wg sync.WaitGroup
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			wg.Add(2)
 			go func() { defer wg.Done(); _ = NewStackTraceError() }()
 			go func() { defer wg.Done(); _ = RuntimeDetailsFrozen() }()

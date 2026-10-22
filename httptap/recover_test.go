@@ -33,7 +33,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("nil_logger_panics", func(t *testing.T) {
 		t.Parallel()
 		require.PanicsWithValue(t, "httptap: logger is nil", func() {
-			NewRecoverHandler(nil, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {})
+			NewRecoverHandler(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
 
@@ -48,7 +48,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("clean_path_implicit_200", func(t *testing.T) {
 		t.Parallel()
 		l, logBuf := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("ok"))
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
@@ -65,7 +65,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("clean_path_explicit_201", func(t *testing.T) {
 		t.Parallel()
 		l, logBuf := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte("created"))
 		}
@@ -83,7 +83,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("clean_path_preserves_headers", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("X-Custom", "value123")
 			_, _ = w.Write([]byte("body"))
 		}
@@ -100,7 +100,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("panic_before_writeheader", func(t *testing.T) {
 		t.Parallel()
 		l, logBuf := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(_ http.ResponseWriter, _ *http.Request) {
 			panic("something exploded")
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
@@ -110,6 +110,7 @@ func TestNewRecoverHandler(t *testing.T) {
 		h(rec, req)
 
 		require.Equal(t, http.StatusInternalServerError, rec.Code)
+		//nolint:testifylint // response body bytes are the public contract
 		require.Equal(t, `{"error":"something went wrong"}`, rec.Body.String())
 		require.Equal(t, "application/json; charset=utf-8", rec.Header().Get("Content-Type"))
 		require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
@@ -124,7 +125,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("panic_after_writeheader_200", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("partial"))
 			panic("late panic")
@@ -137,16 +138,17 @@ func TestNewRecoverHandler(t *testing.T) {
 
 		// the buffer absorbed the partial write; the wire must get a clean 500.
 		require.Equal(t, http.StatusInternalServerError, rec.Code)
+		//nolint:testifylint // response body bytes are the public contract
 		require.Equal(t, `{"error":"something went wrong"}`, rec.Body.String())
 		// "partial" must NOT appear on the wire — this is the load-bearing assertion.
-		assert.False(t, strings.Contains(rec.Body.String(), "partial"),
+		assert.NotContains(t, rec.Body.String(), "partial",
 			"partial write must not reach the wire after a panic")
 	})
 
 	t.Run("panic_with_ErrAbortHandler", func(t *testing.T) {
 		t.Parallel()
 		l, logBuf := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(_ http.ResponseWriter, _ *http.Request) {
 			panic(http.ErrAbortHandler)
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
@@ -174,11 +176,15 @@ func TestNewRecoverHandler(t *testing.T) {
 		hijackCalled := false
 		hw := &fakeHijackerWriter{ResponseRecorder: httptest.NewRecorder()}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			hj, ok := w.(http.Hijacker)
-			require.True(t, ok, "handler must see Hijacker")
+			if !assert.True(t, ok, "handler must see Hijacker") {
+				return
+			}
 			_, _, err := hj.Hijack()
-			require.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 			hijackCalled = true
 			panic("panic after hijack")
 		}
@@ -191,8 +197,8 @@ func TestNewRecoverHandler(t *testing.T) {
 		// log line must be emitted.
 		require.Contains(t, logBuf.String(), "panic:")
 		// the ResponseRecorder must not have received WriteHeader or Write after hijack.
-		require.Equal(t, 200, hw.ResponseRecorder.Code, "recorder code must stay at default 200 (not a real 500 from the middleware)")
-		require.Empty(t, hw.ResponseRecorder.Body.String(), "body must not be written after hijack")
+		require.Equal(t, 200, hw.Code, "recorder code must stay at default 200 (not a real 500 from the middleware)")
+		require.Empty(t, hw.Body.String(), "body must not be written after hijack")
 	})
 
 	t.Run("flusher_passthrough", func(t *testing.T) {
@@ -204,9 +210,11 @@ func TestNewRecoverHandler(t *testing.T) {
 			onFlush:          func() { flushed = true },
 		}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			f, ok := w.(http.Flusher)
-			require.True(t, ok, "handler must see http.Flusher when underlying writer is Flusher")
+			if !assert.True(t, ok, "handler must see http.Flusher when underlying writer is Flusher") {
+				return
+			}
 			f.Flush()
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
@@ -226,7 +234,7 @@ func TestNewRecoverHandler(t *testing.T) {
 			onFlush:          func() {},
 		}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("partial-body"))
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
@@ -241,6 +249,7 @@ func TestNewRecoverHandler(t *testing.T) {
 		require.Equal(t, http.StatusInternalServerError, fw.Code)
 		require.NotContains(t, fw.Body.String(), "partial-body",
 			"flushed partial body must not reach the wire after a panic")
+		//nolint:testifylint // response body bytes are the public contract
 		require.Equal(t, `{"error":"something went wrong"}`, fw.Body.String())
 	})
 
@@ -250,7 +259,7 @@ func TestNewRecoverHandler(t *testing.T) {
 
 		// a handler that does absolutely nothing should produce the same response
 		// as if it had been called without the recover wrapper.
-		next := func(w http.ResponseWriter, r *http.Request) {}
+		next := func(_ http.ResponseWriter, _ *http.Request) {}
 		h := NewRecoverHandler(l, logLevelInfo, next)
 
 		withRecover := httptest.NewRecorder()
@@ -265,7 +274,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("option_WithFallbackResponse/custom_body_on_panic", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) { panic("oops") }
+		next := func(_ http.ResponseWriter, _ *http.Request) { panic("oops") }
 		h := NewRecoverHandler(l, logLevelInfo, next,
 			WithFallbackResponse([]byte("oops")),
 		)
@@ -278,7 +287,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("option_WithFallbackResponse/empty_body_is_allowed", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) { panic("oops") }
+		next := func(_ http.ResponseWriter, _ *http.Request) { panic("oops") }
 		h := NewRecoverHandler(l, logLevelInfo, next,
 			WithFallbackResponse([]byte{}),
 		)
@@ -291,7 +300,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("option_WithFallbackContentType/custom_content_type_on_panic", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) { panic("oops") }
+		next := func(_ http.ResponseWriter, _ *http.Request) { panic("oops") }
 		h := NewRecoverHandler(l, logLevelInfo, next,
 			WithFallbackContentType("text/plain; charset=utf-8"),
 		)
@@ -305,7 +314,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("option_WithPublicMessage/custom_message_in_log_not_body", func(t *testing.T) {
 		t.Parallel()
 		l, logBuf := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) { panic("oops") }
+		next := func(_ http.ResponseWriter, _ *http.Request) { panic("oops") }
 		h := NewRecoverHandler(l, logLevelInfo, next,
 			WithPublicMessage("server error"),
 		)
@@ -316,6 +325,7 @@ func TestNewRecoverHandler(t *testing.T) {
 		// log line must contain the custom public message.
 		assert.Contains(t, logBuf.String(), "server error")
 		// response body must still be the default (WithPublicMessage does not change the body).
+		//nolint:testifylint // response body bytes are the public contract
 		assert.Equal(t, `{"error":"something went wrong"}`, rec.Body.String())
 	})
 
@@ -325,13 +335,17 @@ func TestNewRecoverHandler(t *testing.T) {
 		hw := &fakeHijackerWriter{ResponseRecorder: httptest.NewRecorder()}
 
 		hijacked := false
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			hj, ok := w.(http.Hijacker)
-			require.True(t, ok, "handler must see http.Hijacker")
+			if !assert.True(t, ok, "handler must see http.Hijacker") {
+				return
+			}
 			conn, rw, err := hj.Hijack()
-			require.NoError(t, err)
-			require.NotNil(t, conn)
-			require.NotNil(t, rw)
+			if !assert.NoError(t, err) {
+				return
+			}
+			assert.NotNil(t, conn)
+			assert.NotNil(t, rw)
 			hijacked = true
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
@@ -349,10 +363,12 @@ func TestNewRecoverHandler(t *testing.T) {
 			onPush:           func(target string) { pushed = target },
 		}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			p, ok := w.(http.Pusher)
-			require.True(t, ok, "handler must see http.Pusher")
-			require.NoError(t, p.Push("/pushed-resource", nil))
+			if !assert.True(t, ok, "handler must see http.Pusher") {
+				return
+			}
+			assert.NoError(t, p.Push("/pushed-resource", nil))
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
 
@@ -363,7 +379,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("last_option_wins", func(t *testing.T) {
 		t.Parallel()
 		l, logBuf := newRecoverTestLogger(t)
-		next := func(w http.ResponseWriter, r *http.Request) { panic("oops") }
+		next := func(_ http.ResponseWriter, _ *http.Request) { panic("oops") }
 		h := NewRecoverHandler(l, logLevelInfo, next,
 			WithPublicMessage("a"),
 			WithPublicMessage("b"),
@@ -394,7 +410,7 @@ func TestNewRecoverHandler(t *testing.T) {
 		h := NewRecoverHandler(l, logLevelInfo, next)
 
 		var wg sync.WaitGroup
-		for i := 0; i < total; i++ {
+		for i := range total {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()

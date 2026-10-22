@@ -21,11 +21,13 @@ import (
 )
 
 func TestTelegramHandler(t *testing.T) {
+	t.Parallel()
 	t.Run("delivers to the live API", func(t *testing.T) {
+		t.Parallel()
 		botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
 		chatID := os.Getenv("TELEGRAM_BOT_CHAT_ID")
 
-		if len(botToken) == 0 || len(chatID) == 0 {
+		if botToken == "" || chatID == "" {
 			t.Skipf("TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_CHAT_ID not set")
 		}
 
@@ -74,7 +76,9 @@ func TestTelegramHandler(t *testing.T) {
 }
 
 func TestRotatingFileHandler(t *testing.T) {
+	t.Parallel()
 	t.Run("appends and rotates", func(t *testing.T) {
+		t.Parallel()
 		tmpFolder := t.TempDir()
 
 		h := RotatingFileHandler(tmpFolder, "err", WithMaxFileSize(7), WithMaxFiles(3))
@@ -85,7 +89,7 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 1, "incorrect files count")
 		f, ok := files["err.00000001."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "11\n", f, "incorrect file context")
 
 		_, err = h.Write(bytes.Repeat([]byte("2"), 2))
@@ -94,7 +98,7 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 1, "incorrect files count")
 		f, ok = files["err.00000001."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "11\n22\n", f, "incorrect file context")
 
 		_, err = h.Write(bytes.Repeat([]byte("3"), 2))
@@ -103,7 +107,7 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 1, "incorrect files count")
 		f, ok = files["err.00000001."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "11\n22\n33\n", f, "incorrect file context")
 
 		_, err = h.Write([]byte("4"))
@@ -112,10 +116,10 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 2, "incorrect files count")
 		f, ok = files["err.00000001."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "11\n22\n33\n", f, "incorrect file context")
 		f, ok = files["err.00000002."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "4\n", f, "incorrect file context")
 
 		_, err = h.Write(bytes.Repeat([]byte("5"), 5))
@@ -124,10 +128,10 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 2, "incorrect files count")
 		f, ok = files["err.00000001."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "11\n22\n33\n", f, "incorrect file context")
 		f, ok = files["err.00000002."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "4\n55555\n", f, "incorrect file context")
 
 		_, err = h.Write(bytes.Repeat([]byte("6"), 10))
@@ -138,13 +142,13 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 3, "incorrect files count")
 		f, ok = files["err.00000002."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "4\n55555\n", f, "incorrect file context")
 		f, ok = files["err.00000003."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "6666666666\n", f, "incorrect file context")
 		f, ok = files["err.00000004."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "7777777777\n", f, "incorrect file context")
 	})
 
@@ -153,7 +157,6 @@ func TestRotatingFileHandler(t *testing.T) {
 
 		dir := t.TempDir()
 		for _, badPrefix := range []string{"../evil", "sub/dir", "a/b"} {
-			badPrefix := badPrefix
 			t.Run(badPrefix, func(t *testing.T) {
 				t.Parallel()
 
@@ -166,6 +169,7 @@ func TestRotatingFileHandler(t *testing.T) {
 	})
 
 	t.Run("rotate and prune single instance", func(t *testing.T) {
+		t.Parallel()
 		tmpFolder := t.TempDir()
 
 		h := RotatingFileHandler(tmpFolder, "err", WithMaxFileSize(3), WithMaxFiles(3))
@@ -180,13 +184,13 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 3, "incorrect files count")
 		f, ok := files["err.00000001."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "111\n", f, "incorrect file context")
 		f, ok = files["err.00000002."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "222\n", f, "incorrect file context")
 		f, ok = files["err.00000003."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "333\n", f, "incorrect file context")
 
 		_, err = h.Write(bytes.Repeat([]byte("4"), 3))
@@ -196,15 +200,15 @@ func TestRotatingFileHandler(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, files, 3, "incorrect files count")
 		_, ok = files["err.00000001."+defaultFileExtension]
-		require.Equal(t, false, ok, "oldest file must be pruned")
+		require.False(t, ok, "oldest file must be pruned")
 		f, ok = files["err.00000002."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "222\n", f, "incorrect file context")
 		f, ok = files["err.00000003."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "333\n", f, "incorrect file context")
 		f, ok = files["err.00000004."+defaultFileExtension]
-		require.Equal(t, true, ok, "file context not found")
+		require.True(t, ok, "file context not found")
 		require.Equal(t, "444\n", f, "incorrect file context")
 	})
 
@@ -223,35 +227,39 @@ func TestRotatingFileHandler(t *testing.T) {
 }
 
 func TestRotatingFileHandlerForRaceCondition(t *testing.T) {
+	t.Parallel()
 	tmpFolder := t.TempDir()
 
 	h := RotatingFileHandler(tmpFolder, "err", WithMaxFileSize(70), WithMaxFiles(10))
-	messages := make([]string, 0)
-	for i := 0; i < 16; i++ {
+	messages := make([]string, 0, 16)
+	for i := range 16 {
 		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
 	}
-	var err error
+	var mu sync.Mutex
+	var writeErr error
 	wg := sync.WaitGroup{}
 	for _, m := range messages {
 		wg.Add(1)
 		go func(wg *sync.WaitGroup, w io.Writer, txt string) {
 			defer wg.Done()
 			if _, e := w.Write([]byte(txt)); e != nil {
-				err = errors.Join(err, e)
+				mu.Lock()
+				writeErr = errors.Join(writeErr, e)
+				mu.Unlock()
 			}
 		}(&wg, h, m)
 	}
 	wg.Wait()
-	require.NoError(t, err)
+	require.NoError(t, writeErr)
 
 	files, err := extractFilesOrFail(tmpFolder)
 	require.NoError(t, err)
 
-	allContext := ""
+	var sb strings.Builder
 	for f, ctx := range files {
-		allContext += fmt.Sprintf("\n%s:\n%s\n", f, ctx)
+		fmt.Fprintf(&sb, "\n%s:\n%s\n", f, ctx)
 	}
-	allContext = strings.TrimSpace(allContext)
+	allContext := strings.TrimSpace(sb.String())
 
 	for _, m := range messages {
 		if !strings.Contains(allContext, m) {
@@ -261,6 +269,7 @@ func TestRotatingFileHandlerForRaceCondition(t *testing.T) {
 }
 
 func TestFileByFormatHandler(t *testing.T) {
+	t.Parallel()
 	tmpFolder := t.TempDir()
 
 	m := sync.Mutex{}
@@ -300,11 +309,12 @@ func TestFileByFormatHandler(t *testing.T) {
 	for expectedFileName, expectedFileContext := range expectedDataset {
 		actualContext, exists := files[expectedFileName]
 		require.True(t, exists)
-		require.Equal(t, actualContext, expectedFileContext, expectedFileName)
+		require.Equal(t, expectedFileContext, actualContext, expectedFileName)
 	}
 }
 
 func TestFileByFormatHandlerV2(t *testing.T) {
+	t.Parallel()
 	startedAt := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	tmpFolder := t.TempDir()
 
@@ -350,6 +360,7 @@ func TestFileByFormatHandlerV2(t *testing.T) {
 }
 
 func TestFileByFormatHandlerForRaceCondition(t *testing.T) {
+	t.Parallel()
 	tmpFolder := t.TempDir()
 
 	handlerFileName := "2000-01-10"
@@ -366,7 +377,7 @@ func TestFileByFormatHandlerForRaceCondition(t *testing.T) {
 		go func(w io.Writer) {
 			defer wg.Done()
 			_, err := w.Write([]byte(fileContext))
-			require.NoError(t, err)
+			assert.NoError(t, err)
 		}(handler)
 	}
 	wg.Wait() // waiting when all jobs will be done
@@ -385,6 +396,7 @@ func TestFileByFormatHandlerForRaceCondition(t *testing.T) {
 }
 
 func TestVerifyFiles(t *testing.T) {
+	t.Parallel()
 	tmpFolder := t.TempDir()
 
 	err := verifyFiles(tmpFolder, 3)
@@ -392,9 +404,9 @@ func TestVerifyFiles(t *testing.T) {
 
 	files, err := extractFilesOrFail(tmpFolder)
 	require.NoError(t, err)
-	require.Len(t, files, 0, "incorrect files count")
+	require.Empty(t, files, "incorrect files count")
 
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		err = os.WriteFile(path.Join(tmpFolder, fmt.Sprintf("%d.%s", rand.Int31(), defaultFileExtension)), []byte("-"), os.ModePerm)
 		require.NoError(t, err)
 	}
@@ -613,7 +625,8 @@ func TestTimestampedPrintHandler(t *testing.T) {
 	fixedTime := time.Date(2024, 3, 15, 10, 30, 45, 0, time.UTC)
 	fixedClock := withClock(func() time.Time { return fixedTime })
 	tsPrefix := "2024/03/15 10:30:45"
-	indent := strings.Repeat(" ", len(tsPrefix)+1) // len("2024/03/15 10:30:45 ")
+	// indent is the width of the timestamp prefix plus trailing space
+	indent := strings.Repeat(" ", len(tsPrefix)+1)
 
 	t.Run("single line", func(t *testing.T) {
 		t.Parallel()
@@ -767,6 +780,7 @@ func TestTimestampedHandler(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // captureStdout redirects the process-global os.Stdout
 func TestPrintHandler(t *testing.T) {
 	// serial: captureStdout redirects the process-global os.Stdout.
 	m := uniqueToken()
@@ -930,13 +944,14 @@ func testRotatingFileHandlerFreshStart(t *testing.T) {
 }
 
 func TestRotatingFileHandler_FreshStartForRaceCondition(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// construct once — single truncation before any goroutine starts.
 	h := RotatingFileHandler(dir, "race", WithMaxFileSize(70), WithMaxFiles(10), WithFreshStart())
 
 	messages := make([]string, 0, 16)
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
 	}
 
@@ -960,11 +975,11 @@ func TestRotatingFileHandler_FreshStartForRaceCondition(t *testing.T) {
 	files, err := extractFilesOrFail(dir)
 	require.NoError(t, err)
 
-	allContent := ""
+	var sb strings.Builder
 	for f, ctx := range files {
-		allContent += fmt.Sprintf("\n%s:\n%s\n", f, ctx)
+		fmt.Fprintf(&sb, "\n%s:\n%s\n", f, ctx)
 	}
-	allContent = strings.TrimSpace(allContent)
+	allContent := strings.TrimSpace(sb.String())
 
 	for _, m := range messages {
 		if !strings.Contains(allContent, m) {

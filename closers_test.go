@@ -72,7 +72,7 @@ func TestCloseOrJoin(t *testing.T) {
 		result := func() (err error) {
 			defer CloseOrJoin(&err, &fixedCloser{err: closeErr})
 			err = existingErr
-			return
+			return err
 		}()
 		require.ErrorIs(t, result, existingErr)
 		require.ErrorIs(t, result, closeErr)
@@ -85,7 +85,7 @@ func TestCloseOrJoin(t *testing.T) {
 		result := func() (err error) {
 			defer CloseOrJoin(&err, &fixedCloser{err: nil})
 			err = original
-			return
+			return err
 		}()
 		// errors.Join(original, nil) returns a joinError wrapping the original; use
 		// ErrorIs to check the semantic value rather than the concrete type.

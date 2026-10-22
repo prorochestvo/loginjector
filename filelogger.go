@@ -1,6 +1,7 @@
 package loginjector
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -132,7 +133,7 @@ func NewFileLogger(folder, prefix string, minLevel LogLevel, opts ...FileLoggerO
 	}
 
 	if prefix == "" {
-		return nil, fmt.Errorf("loginjector: file logger prefix must not be empty")
+		return nil, errors.New("loginjector: file logger prefix must not be empty")
 	}
 
 	// reject the dot entries — they produce a confusing in-folder dotfile rather than
@@ -148,16 +149,16 @@ func NewFileLogger(folder, prefix string, minLevel LogLevel, opts ...FileLoggerO
 
 	if folder == "" {
 		if !cfg.tempFallback {
-			return nil, fmt.Errorf("loginjector: empty folder and temp fallback not enabled")
+			return nil, errors.New("loginjector: empty folder and temp fallback not enabled")
 		}
 		folder = filepath.Join(os.TempDir(), "logs")
 	}
 
-	if err := os.MkdirAll(folder, 0750); err != nil {
+	if err := os.MkdirAll(folder, 0o750); err != nil {
 		return nil, fmt.Errorf("loginjector: create log folder %q: %w", folder, err)
 	}
-	// MkdirAll does not chmod a pre-existing directory; enforce 0750 explicitly.
-	if err := os.Chmod(folder, 0750); err != nil {
+	// MkdirAll does not chmod a pre-existing directory; enforce 0o750 explicitly.
+	if err := os.Chmod(folder, 0o750); err != nil {
 		return nil, fmt.Errorf("loginjector: set permissions on log folder %q: %w", folder, err)
 	}
 

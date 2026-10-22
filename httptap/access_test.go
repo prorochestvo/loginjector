@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,13 +20,13 @@ func TestNewAccessHandler(t *testing.T) {
 	// reTimestamp matches the RFC3339Nano timestamp prefix of each log line.
 	reTimestamp := regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z`)
 	// reDuration matches the trailing duration field.
-	reDuration := regexp.MustCompile(`[0-9]+\.[0-9]{3}ms\n$`)
+	reDuration := regexp.MustCompile(`\d+\.\d{3}ms\n$`)
 
 	t.Run("default_status_200", func(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte("hello"))
 		}
 		h := NewAccessHandler(&buf, next)
@@ -43,7 +44,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 		h := NewAccessHandler(&buf, next)
@@ -59,7 +60,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 		h := NewAccessHandler(&buf, next)
@@ -75,7 +76,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusCreated)
 			w.WriteHeader(http.StatusInternalServerError) // must be ignored
 		}
@@ -94,7 +95,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}
 		h := NewAccessHandler(&buf, next)
@@ -112,7 +113,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}
 		h := NewAccessHandler(&buf, next)
@@ -128,7 +129,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {}
+		next := func(_ http.ResponseWriter, _ *http.Request) {}
 		h := NewAccessHandler(&buf, next)
 
 		req := httptest.NewRequest(http.MethodGet, "/ts", nil)
@@ -141,7 +142,7 @@ func TestNewAccessHandler(t *testing.T) {
 	t.Run("nil_out_panics", func(t *testing.T) {
 		t.Parallel()
 
-		next := func(w http.ResponseWriter, r *http.Request) {}
+		next := func(_ http.ResponseWriter, _ *http.Request) {}
 		require.PanicsWithValue(t, "httptap: out is nil", func() {
 			NewAccessHandler(nil, next)
 		})
@@ -166,9 +167,11 @@ func TestNewAccessHandler(t *testing.T) {
 			onFlush:          func() { flushed = true },
 		}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			f, ok := w.(http.Flusher)
-			require.True(t, ok, "handler must see http.Flusher")
+			if !assert.True(t, ok, "handler must see http.Flusher") {
+				return
+			}
 			f.Flush()
 		}
 		h := NewAccessHandler(&buf, next)
@@ -186,7 +189,7 @@ func TestNewAccessHandler(t *testing.T) {
 		pw := &plainResponseWriter{rec: httptest.NewRecorder()}
 
 		var gotFlusher bool
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			_, gotFlusher = w.(http.Flusher)
 		}
 		h := NewAccessHandler(&buf, next)
@@ -203,11 +206,15 @@ func TestNewAccessHandler(t *testing.T) {
 		var buf bytes.Buffer
 		hw := &fakeHijackerWriter{ResponseRecorder: httptest.NewRecorder()}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			hj, ok := w.(http.Hijacker)
-			require.True(t, ok, "handler must see http.Hijacker")
+			if !assert.True(t, ok, "handler must see http.Hijacker") {
+				return
+			}
 			conn, _, err := hj.Hijack()
-			require.NoError(t, err)
+			if !assert.NoError(t, err) {
+				return
+			}
 			_ = conn.Close()
 			// no WriteHeader or Write — status stays 0
 		}
@@ -231,10 +238,12 @@ func TestNewAccessHandler(t *testing.T) {
 			onPush:           func(target string) { pushed = target },
 		}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			p, ok := w.(http.Pusher)
-			require.True(t, ok, "handler must see http.Pusher")
-			require.NoError(t, p.Push("/resource", nil))
+			if !assert.True(t, ok, "handler must see http.Pusher") {
+				return
+			}
+			assert.NoError(t, p.Push("/resource", nil))
 		}
 		h := NewAccessHandler(&buf, next)
 
@@ -255,7 +264,7 @@ func TestNewAccessHandler(t *testing.T) {
 		}
 
 		var gotFlusher, gotHijacker, gotPusher bool
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			_, gotFlusher = w.(http.Flusher)
 			_, gotHijacker = w.(http.Hijacker)
 			_, gotPusher = w.(http.Pusher)
@@ -274,7 +283,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(_ http.ResponseWriter, _ *http.Request) {
 			panic("intentional test panic")
 		}
 		h := NewAccessHandler(&buf, next)
@@ -292,14 +301,14 @@ func TestNewAccessHandler(t *testing.T) {
 		const N = 200
 		lw := &lockedWriter{w: io.Discard}
 
-		next := func(w http.ResponseWriter, r *http.Request) {
+		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}
 		h := NewAccessHandler(lw, next)
 
 		var wg sync.WaitGroup
 		wg.Add(N)
-		for i := 0; i < N; i++ {
+		for range N {
 			go func() {
 				defer wg.Done()
 				req := httptest.NewRequest(http.MethodGet, "/race", nil)
@@ -315,7 +324,7 @@ func TestNewAccessHandler(t *testing.T) {
 // path (plain http.ResponseWriter, no optional interfaces, io.Discard output).
 // Budget: <= 5 allocs/op.
 func BenchmarkNewAccessHandler(b *testing.B) {
-	next := func(w http.ResponseWriter, r *http.Request) {
+	next := func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 	h := NewAccessHandler(io.Discard, next)
@@ -326,7 +335,7 @@ func BenchmarkNewAccessHandler(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		h(pw, req)
 	}
 }
