@@ -6,8 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `httptap.WithRedactQueryParams(names...)` — additive-only option for
+  `NewPayloadHandlerWithOptions` to redact query-parameter values. The default set
+  (`access_token`, `refresh_token`, `id_token`, `client_secret`, `api_key`, `apikey`,
+  `password`) is always applied and cannot be removed; additional parameter names are
+  added (case-insensitive).
+
 ### Changed
 
+- Payload request line: query parameters in the default set are logged as `name=[REDACTED]`;
+  other parameters are byte-identical.
+- Payload headers: `X-Api-Key` and `X-Auth-Token` lines no longer appear in request or
+  response dumps and cannot be re-enabled.
+- Access line, payload request line, and payload summary: control bytes and U+0085/U+2028/U+2029
+  in the path (and the payload query) are percent-encoded (`%0A`); other paths are
+  byte-identical.
+- Payload response line shows the first final status (`201 Created` after
+  `WriteHeader(201)`, `WriteHeader(500)`), not the last attempted one.
+- `NewAccessHandler` logs `[200]` for handlers that return without writing; `[000]`
+  remains for hijacked or panicked requests.
+- `NewRecoverHandler` sends 1xx responses (for example 103 Early Hints) immediately
+  instead of treating them as the final status.
+- `NewRecoverHandler`: `Flush` commits the buffered response; a panic after a commit
+  is logged and re-panicked as `http.ErrAbortHandler`, so an outer recover middleware
+  now sees `http.ErrAbortHandler` after a `Flush` instead of a 500 being written.
 - `TelegramHandler` now wraps its multipart-construction errors with `%w` instead of `%s`.
   The error messages are byte-identical; `errors.Is`/`errors.As` can now reach the
   underlying error. Errors that carry the redacted bot-token URL are unchanged and still
@@ -20,6 +44,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `NewRecoverHandler` sent `WriteHeader(404)` + `Flush` as status 200.
+- `NewRecoverHandler` dropped header deletions on commit.
+- `NewRecoverHandler` did not freeze headers at `WriteHeader`.
+- `NewAccessHandler` and `NewPayloadHandlerWithOptions` treated 1xx informational responses
+  as final status.
 - `RotatingFileHandler` without options pruned every `*.log` file in its folder, whatever
   its name, when the file count exceeded `WithMaxFiles` — deleting log files of other
   components and the live file of another handler sharing the folder (including
@@ -33,6 +62,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `TestRotatingFileHandlerForRaceCondition` joined errors from several goroutines without a
   lock, and `TestFileByFormatHandlerForRaceCondition` called `require` off the test
   goroutine; both are corrected. `TestLogger_Write` now restores the std `log` output.
+
+### Security
+
+- Header redaction is case-insensitive for any key spelling; the always-on sets now cover
+  `X-Api-Key`, `X-Auth-Token`, and credential query parameters (`access_token`, `refresh_token`,
+  `id_token`, `client_secret`, `api_key`, `apikey`, `password`). Control characters can no
+  longer forge log lines through the path. Note: header values (including `Referer` and
+  `Location`, which can carry OAuth `code` / `access_token`) are not redacted or escaped.
 
 ## [1.0.9] - 2026-07-22
 
