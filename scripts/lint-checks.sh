@@ -9,7 +9,7 @@
 # Exit code 1 on any violation. Wire into `make lint` after golangci-lint.
 set -uo pipefail
 
-root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+root=${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
 cd "$root" || exit 1
 
 status=0
@@ -26,13 +26,14 @@ if hits=$(grep -rnE '^\s*//\s*[-=*#]{3,}' --include='*.go' . 2>/dev/null); then
 fi
 
 # Plan and task references outside the plans/ tree. The reason belongs in the
-# code; the plan number is meaningless to whoever reads the file later.
+# code; a YYMMDD.NNNN plan id is meaningless to whoever reads the file later.
 #
 # .claude/agent-memory is exempt: it is written by agents to record where a piece
 # of context came from, so a plan reference there is the point rather than a
 # leak. The rest of .claude/ is hand-authored and stays under the rule.
-if hits=$(grep -rnE '(plans/[0-9]{3}-|PLAN-[0-9]+|task #[0-9]+)' \
+if hits=$(grep -rnE '(^|[^0-9.])[0-9]{6}\.[0-9]{4}([^0-9]|$)|plans/[0-9]{3,}-|PLAN-[0-9]+|task #[0-9]+' \
 	--include='*.go' --include='*.sql' --include='*.md' \
+	--include='*.sh' --include='*.yml' --include='*.yaml' --include='Makefile' \
 	--exclude-dir=plans --exclude-dir=.git --exclude-dir=agent-memory \
 	--exclude-dir=logs --exclude-dir=tmp --exclude-dir=build --exclude-dir=backups \
 	. 2>/dev/null); then
