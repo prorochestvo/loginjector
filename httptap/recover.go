@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	loginjector "github.com/prorochestvo/loginjector"
 )
@@ -232,6 +233,36 @@ func replaceHeader(dst, src http.Header) {
 	}
 }
 
+// copyTrailers copies trailer headers from the live buffered map to the real map.
+// Trailer keys are those declared in snapshot["Trailer"] (comma-separated, trimmed,
+// canonicalised) and those with http.TrailerPrefix in the live buffered headers.
+func copyTrailers(realHeader, live, snapshot http.Header) {
+	if snapshot == nil {
+		return
+	}
+	// Get the declared trailer names from the snapshot
+	declared := snapshot.Get("Trailer")
+	trailerMap := make(map[string]struct{})
+	if declared != "" {
+		for _, name := range strings.Split(declared, ",") {
+			trailerMap[http.CanonicalHeaderKey(strings.TrimSpace(name))] = struct{}{}
+		}
+	}
+
+	// Copy trailers from the live map to the real map
+	for k, v := range live {
+		key := strings.TrimSpace(k)
+		if strings.HasPrefix(key, http.TrailerPrefix) {
+			// Remove the prefix and copy to real
+			trailerKey := strings.TrimPrefix(key, http.TrailerPrefix)
+			realHeader[trailerKey] = append([]string(nil), v...)
+		} else if _, isDeclared := trailerMap[http.CanonicalHeaderKey(key)]; isDeclared {
+			// Declared trailer, copy to real
+			realHeader[key] = append([]string(nil), v...)
+		}
+	}
+}
+
 // Write appends b to the in-memory body buffer, or forwards to the real writer
 // if already committed. Implicitly calls WriteHeader(200) if WriteHeader has not
 // been called yet, matching the stdlib contract.
@@ -280,6 +311,8 @@ func (rrw *recoverResponseWriter) beforeFlush() {
 	}
 	// write the buffered body to the real writer.
 	_, _ = rrw.ResponseWriter.Write(rrw.body.Bytes())
+	// copy trailers that were set after the body write.
+	copyTrailers(rrw.ResponseWriter.Header(), rrw.headers, rrw.snapshot)
 	// reset the body buffer and mark as committed.
 	rrw.body.Reset()
 	rrw.committed = true
@@ -310,6 +343,8 @@ func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
 	}
 	// write the buffered body.
 	_, err := w.Write(rrw.body.Bytes())
+	// copy trailers that were set after the body write.
+	copyTrailers(w.Header(), rrw.headers, rrw.snapshot)
 	return err
 }
 

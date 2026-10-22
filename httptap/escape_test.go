@@ -55,12 +55,12 @@ func TestEscapeControl(t *testing.T) {
 		assert.Contains(t, output, "%E2%80%A9")
 	})
 
-	t.Run("invalid_utf8_unchanged", func(t *testing.T) {
+	t.Run("invalid_utf8_escaped", func(t *testing.T) {
 		t.Parallel()
-		// A lone 0xFF byte is not valid UTF-8, but it's not a control byte either
-		// It should pass through unchanged
+		// A lone 0xFF byte is invalid UTF-8 and a control byte (>=0x80)
+		// It should be escaped as %FF
 		input := "a\xFFb"
 		output := escapeControl(input)
-		assert.Equal(t, input, output)
+		assert.Equal(t, "a%FFb", output)
 	})
 }
