@@ -226,9 +226,9 @@ func TestNewRecoverHandler(t *testing.T) {
 		require.True(t, flushed, "Flush must be forwarded to the real underlying Flusher")
 	})
 
-	t.Run("panic_after_write_and_flush_buffered_body_not_on_wire", func(t *testing.T) {
+	t.Run("panic_after_flush_aborts", func(t *testing.T) {
 		t.Parallel()
-		l, _ := newRecoverTestLogger(t)
+		l, logBuf := newRecoverTestLogger(t)
 		fw := &fakeFlusherWriter{
 			ResponseRecorder: httptest.NewRecorder(),
 			onFlush:          func() {},
@@ -243,14 +243,89 @@ func TestNewRecoverHandler(t *testing.T) {
 		}
 		h := NewRecoverHandler(l, logLevelInfo, next)
 
+		// panic should be caught, logged, and re-panicked as http.ErrAbortHandler.
+		require.PanicsWithValue(t, http.ErrAbortHandler, func() {
+			h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
+		})
+
+		// the partial-body is on the wire (it was flushed before the panic).
+		require.Equal(t, http.StatusOK, fw.Code, "status must be 200 (committed before panic)")
+		require.Contains(t, fw.Body.String(), "partial-body", "flushed partial body must be on wire")
+		// the panic must be logged.
+		require.Contains(t, logBuf.String(), "panic:", "panic must be logged")
+		require.Contains(t, logBuf.String(), "flush then panic", "panic message must be logged")
+	})
+
+	t.Run("flush_commits_buffered_status", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		fw := &fakeFlusherWriter{
+			ResponseRecorder: httptest.NewRecorder(),
+			onFlush:          func() {},
+		}
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("body"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
 		h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
 
-		// the buffered partial-body must not reach the wire; the 500 body replaces it.
-		require.Equal(t, http.StatusInternalServerError, fw.Code)
-		require.NotContains(t, fw.Body.String(), "partial-body",
-			"flushed partial body must not reach the wire after a panic")
-		//nolint:testifylint // response body bytes are the public contract
-		require.Equal(t, `{"error":"something went wrong"}`, fw.Body.String())
+		require.Equal(t, http.StatusNotFound, fw.Code, "flushed status must be sent")
+		require.Equal(t, "body", fw.Body.String(), "flushed body must be sent")
+	})
+
+	t.Run("panic_before_flush_still_500", func(t *testing.T) {
+		t.Parallel()
+		l, logBuf := newRecoverTestLogger(t)
+		fw := &fakeFlusherWriter{
+			ResponseRecorder: httptest.NewRecorder(),
+			onFlush:          func() {},
+		}
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("partial-body"))
+			panic("before flush")
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		// panic before flush should result in 500 with fallback body.
+		require.Equal(t, http.StatusInternalServerError, fw.Code, "status must be 500")
+		require.NotContains(t, fw.Body.String(), "partial-body", "partial body must not be sent")
+		require.Contains(t, logBuf.String(), "panic:", "panic must be logged")
+	})
+
+	t.Run("flush_after_hijack_is_noop", func(t *testing.T) {
+		t.Parallel()
+		l, _ := newRecoverTestLogger(t)
+		fc := &fakeComboFlusherHijacker{
+			rec:     httptest.NewRecorder(),
+			onFlush: func() {},
+		}
+
+		next := func(w http.ResponseWriter, _ *http.Request) {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				return
+			}
+			_, _, _ = hj.Hijack()
+			// After hijack, Flush should not call the real Flusher.
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		h := NewRecoverHandler(l, logLevelInfo, next)
+
+		h(fc, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		// After hijack, the flusher should not be called again.
+		// (This is validated implicitly: no panic)
 	})
 
 	t.Run("nothing_handler_implicit_200", func(t *testing.T) {

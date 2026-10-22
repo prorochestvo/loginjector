@@ -14,21 +14,27 @@ import (
 // 500 plus a JSON body.
 //
 // Behaviour:
-//   - On a clean return from next, the response is flushed to the underlying
-//     ResponseWriter as if no middleware were present.
-//   - On a panic, the buffered response is discarded and a fresh 500 response
-//     is written with Content-Type "application/json; charset=utf-8" and body
-//     {"error":"something went wrong"}. Both are overridable via options.
+//   - On a clean return from next, the buffered response is flushed to the
+//     underlying ResponseWriter as if no middleware were present.
+//   - If next calls Flush, the buffered response (headers and any body written
+//     so far) is committed to the wire immediately. Subsequent writes forward
+//     through to the real writer. A panic after Flush is logged and re-panicked
+//     as http.ErrAbortHandler, which aborts the connection in the outer server.
+//   - On a panic before Flush (or before any write), the buffered response is
+//     discarded and a fresh 500 response is written with Content-Type
+//     "application/json; charset=utf-8" and body {"error":"something went wrong"}.
+//     Both are overridable via options.
 //   - http.ErrAbortHandler is re-panicked silently, matching net/http's own
 //     server recovery. No log line, no 500 body.
 //   - If next hijacks the connection before panicking, the panic is logged but
 //     no response can be written — the caller owns the conn.
 //
-// The handler buffers the entire response body in memory before forwarding it.
-// This is necessary so a panic AFTER a WriteHeader call can still be replaced
-// with a 500 response. Do not place this middleware in front of SSE, WebSocket,
-// or HTTP/2-push handlers: streaming is lost. Wrap only routes that produce
-// bounded response bodies.
+// The handler buffers the entire response body in memory before Flush is called
+// or the handler returns. This is necessary so a panic AFTER a WriteHeader call
+// can be replaced with a 500 response. SSE, WebSocket, and HTTP/2-push handlers
+// that call Flush are supported: Flush commits the response, and subsequent
+// streaming writes forward through. A panic after Flush is logged and aborts
+// the connection.
 //
 // The stack trace logged uses loginjector.NewStackTraceError(); it contains
 // absolute build-host file paths and MUST NOT be returned to clients. Only the
@@ -78,8 +84,13 @@ func NewRecoverHandler(
 				if rrw.hijacked {
 					return
 				}
-				// buffer absorbed everything; the wire is still clean, so we can
-				// write the 500 response directly to the real ResponseWriter.
+				if rrw.committed {
+					// panic after commit: connection is already active on the wire,
+					// re-panic with ErrAbortHandler to abort the connection.
+					panic(http.ErrAbortHandler)
+				}
+				// panic before commit: buffer absorbed everything; the wire is still
+				// clean, so we can write the 500 response directly to the real ResponseWriter.
 				h := w.Header()
 				h.Set("Content-Type", cfg.contentType)
 				h.Set("X-Content-Type-Options", "nosniff")
@@ -89,6 +100,10 @@ func NewRecoverHandler(
 			}
 			// clean path: flush buffered response to the real writer.
 			if rrw.hijacked {
+				return
+			}
+			if rrw.committed {
+				// already flushed by beforeFlush; nothing more to do.
 				return
 			}
 			if err := rrw.flushTo(w); err != nil {
@@ -147,6 +162,10 @@ type RecoverOption func(*recoverConfig)
 // The snapshot field holds a clone of the buffered headers at the moment a final
 // status is committed, capturing header deletions and preserving the exact headers
 // that were in effect when WriteHeader was called.
+//
+// The committed field tracks whether beforeFlush has been called and the buffered
+// response has been flushed to the real writer. After commit, all writes forward
+// to the real writer.
 type recoverResponseWriter struct {
 	http.ResponseWriter
 	headers     http.Header
@@ -154,6 +173,7 @@ type recoverResponseWriter struct {
 	body        bytes.Buffer
 	statusCode  int
 	wroteHeader bool
+	committed   bool
 	hijacked    bool
 }
 
@@ -169,7 +189,8 @@ func (rrw *recoverResponseWriter) Header() http.Header {
 // WriteHeader records the status code in the buffer. Informational responses
 // (100-199 except 101) are forwarded immediately without recording. The first
 // final status is recorded and a snapshot of the buffered headers is taken.
-// Subsequent calls are no-ops, matching the stdlib http.ResponseWriter contract.
+// After commit, subsequent calls are forwarded to the real writer (which reports
+// the superfluous call). Before commit, they are silent no-ops.
 func (rrw *recoverResponseWriter) WriteHeader(code int) {
 	if isInformational(code) {
 		// forward 1xx immediately: save the real header map, apply buffered headers,
@@ -183,8 +204,15 @@ func (rrw *recoverResponseWriter) WriteHeader(code int) {
 		return
 	}
 	if rrw.wroteHeader {
+		// already have a final status recorded.
+		if rrw.committed {
+			// after commit: forward to real writer (it will report the superfluous call).
+			rrw.ResponseWriter.WriteHeader(code)
+		}
+		// before commit: silent no-op
 		return
 	}
+	// first final status: record it and snapshot the headers.
 	rrw.statusCode = code
 	rrw.wroteHeader = true
 	// snapshot the buffered headers at the moment the final status is committed.
@@ -204,12 +232,18 @@ func replaceHeader(dst, src http.Header) {
 	}
 }
 
-// Write appends b to the in-memory body buffer. Implicitly calls WriteHeader(200)
-// if WriteHeader has not been called yet, matching the stdlib contract.
+// Write appends b to the in-memory body buffer, or forwards to the real writer
+// if already committed. Implicitly calls WriteHeader(200) if WriteHeader has not
+// been called yet, matching the stdlib contract.
 func (rrw *recoverResponseWriter) Write(b []byte) (int, error) {
 	if !rrw.wroteHeader {
 		rrw.WriteHeader(http.StatusOK)
 	}
+	if rrw.committed {
+		// after commit: forward to real writer.
+		return rrw.ResponseWriter.Write(b)
+	}
+	// before commit: buffer the write.
 	return rrw.body.Write(b)
 }
 
@@ -217,18 +251,51 @@ func (rrw *recoverResponseWriter) Write(b []byte) (int, error) {
 // hijacked flag when a downstream handler calls Hijack.
 func (rrw *recoverResponseWriter) markHijacked() { rrw.hijacked = true }
 
-// beforeFlush satisfies tapWriter. This is a placeholder for Task 5; Task 7
-// will implement the actual flush logic.
+// beforeFlush satisfies tapWriter. It commits the buffered response when not
+// already hijacked or committed, then resets the buffer so subsequent writes
+// forward to the real writer.
 func (rrw *recoverResponseWriter) beforeFlush() {
-	// placeholder: no-op for now
+	if rrw.hijacked || rrw.committed {
+		return
+	}
+	// commit the buffered response
+	if rrw.wroteHeader {
+		// final status was recorded: write headers, status, and body to the real writer.
+		if rrw.snapshot != nil {
+			replaceHeader(rrw.ResponseWriter.Header(), rrw.snapshot)
+		}
+		rrw.ResponseWriter.WriteHeader(rrw.statusCode)
+	} else if rrw.headers != nil {
+		// no final status was recorded: apply buffered headers.
+		// The real writer will send an implicit 200 when the body write happens.
+		dst := rrw.ResponseWriter.Header()
+		for k, v := range rrw.headers {
+			// make a copy of the slice so mutations don't affect us.
+			dst[k] = append([]string(nil), v...)
+		}
+		// record the implicit 200 as if it were committed.
+		rrw.statusCode = http.StatusOK
+		rrw.wroteHeader = true
+		rrw.snapshot = rrw.headers.Clone()
+	}
+	// write the buffered body to the real writer.
+	_, _ = rrw.ResponseWriter.Write(rrw.body.Bytes())
+	// reset the body buffer and mark as committed.
+	rrw.body.Reset()
+	rrw.committed = true
 }
 
 // flushTo copies the buffered headers, status, and body to the real writer on
-// the clean (no-panic) path. If next never called WriteHeader, no explicit
+// the clean (no-panic) path. If the response is already committed (flushed via
+// beforeFlush), this is a no-op. If next never called WriteHeader, no explicit
 // status is written here: net/http issues an implicit 200 when the body write
 // triggers the first header flush, faithfully reproducing the handler's
 // observable behaviour.
 func (rrw *recoverResponseWriter) flushTo(w http.ResponseWriter) error {
+	if rrw.committed {
+		// already flushed; nothing to do.
+		return nil
+	}
 	if rrw.wroteHeader && rrw.snapshot != nil {
 		// final status was recorded: use the snapshot (which includes deletions).
 		replaceHeader(w.Header(), rrw.snapshot)
