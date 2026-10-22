@@ -13,26 +13,35 @@ var defaultRedactHeaders = []string{
 	"Proxy-Authorization",
 	"Cookie",
 	"Set-Cookie",
+	"X-Api-Key",
+	"X-Auth-Token",
+}
+
+// redactKey normalizes a header name for redaction set matching: lowercase,
+// then trimmed of whitespace. This ensures case-insensitive matching even
+// when headers are written directly into the map with non-canonical keys.
+func redactKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 // headerToStringWithRedact converts an http.Header map to a multi-line string,
-// omitting any header whose canonical name appears in the redact set. Keys in
-// redact must already be canonicalised with http.CanonicalHeaderKey; keys
-// sourced from an http.Header are always canonical, so no second canonicalisation
-// is needed here.
+// omitting any header whose normalized name (lowercase, trimmed) appears in the
+// redact set. The logged key preserves its original spelling. Matching is
+// case-insensitive: a non-canonical key written directly into w.Header()
+// (e.g. "set-cookie") is still redacted.
 func headerToStringWithRedact(header *http.Header, redact map[string]struct{}) string {
 	var res strings.Builder
 	for key, v := range *header {
-		key = strings.TrimSpace(key)
-		if key == "" {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
 			continue
 		}
-		if _, skip := redact[key]; skip {
+		if _, skip := redact[redactKey(trimmedKey)]; skip {
 			continue
 		}
 		val := strings.Join(v, "; ")
 		val = strings.TrimSpace(val)
-		res.WriteString(key)
+		res.WriteString(trimmedKey)
 		res.WriteString(": ")
 		res.WriteString(val)
 		res.WriteString("\n")

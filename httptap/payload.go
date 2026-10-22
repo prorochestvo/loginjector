@@ -16,7 +16,7 @@ type payloadConfig struct {
 	// maxRequestBody and maxResponseBody: <0 = unlimited, 0 = omit, >0 = cap at N bytes.
 	maxRequestBody  int
 	maxResponseBody int
-	// redactHeaders is case-canonicalised via http.CanonicalHeaderKey; always contains
+	// redactHeaders is lowercase-folded via redactKey(); always contains
 	// the built-in sensitive set and may contain caller-supplied additions.
 	redactHeaders map[string]struct{}
 	// summaryWriter, when non-nil, overrides os.Stdout for the per-request summary line
@@ -36,7 +36,7 @@ const defaultMaxBody = 64 << 10 // 65536
 func defaultPayloadConfig() payloadConfig {
 	m := make(map[string]struct{}, len(defaultRedactHeaders))
 	for _, h := range defaultRedactHeaders {
-		m[h] = struct{}{}
+		m[redactKey(h)] = struct{}{}
 	}
 	return payloadConfig{
 		maxRequestBody:  defaultMaxBody,
@@ -82,12 +82,13 @@ func WithoutBodies() PayloadOption {
 
 // WithRedactHeaders adds header names to the redaction set used when logging
 // request and response headers. The default set (Authorization,
-// Proxy-Authorization, Cookie, Set-Cookie) is always present and cannot be
-// removed; this option is additive only. Matching is case-insensitive.
+// Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key, X-Auth-Token) is always
+// present and cannot be removed; this option is additive only. Matching is
+// case-insensitive.
 func WithRedactHeaders(names ...string) PayloadOption {
 	return func(c *payloadConfig) {
 		for _, n := range names {
-			c.redactHeaders[http.CanonicalHeaderKey(n)] = struct{}{}
+			c.redactHeaders[redactKey(n)] = struct{}{}
 		}
 	}
 }
@@ -106,8 +107,9 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 // It creates a new HTTP middleware handler that logs the full request and
 // response payloads (request line, headers, bodies, response status) to the
 // given logger at the specified level. The Authorization, Proxy-Authorization,
-// Cookie, and Set-Cookie headers are always redacted. This function is
-// equivalent to calling NewPayloadHandlerWithOptions with no options.
+// Cookie, Set-Cookie, X-Api-Key, and X-Auth-Token headers are always redacted.
+// This function is equivalent to calling NewPayloadHandlerWithOptions with no
+// options.
 //
 // A nil logger or nextFunc is a programmer error and panics.
 func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, nextFunc http.HandlerFunc) http.HandlerFunc {
