@@ -46,3 +46,30 @@ func captureStdout(t *testing.T, fn func()) string {
 	_ = r.Close()
 	return out
 }
+
+// captureStderr redirects os.Stderr to a pipe for the duration of fn and returns
+// everything written to it. The caller must NOT run in parallel: os.Stderr is
+// process-global.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+
+	fn()
+
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return out
+}
