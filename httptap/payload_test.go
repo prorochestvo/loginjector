@@ -440,6 +440,51 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 
 		require.Contains(t, b.String(), visible, "non-redacted header must appear in log")
 	})
+
+	t.Run("default_set_redacts_x_api_key", func(t *testing.T) {
+		t.Parallel()
+
+		apiKey := "api-key-" + uniqueToken()
+		h, b := newHandler(t, WithSummaryWriter(io.Discard))
+		req := httptest.NewRequest(http.MethodGet, "/", bytes.NewBufferString(""))
+		req.Header.Set("X-Api-Key", apiKey)
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.NotContains(t, b.String(), apiKey, "X-Api-Key must be in default redaction set")
+	})
+
+	t.Run("default_set_redacts_x_auth_token", func(t *testing.T) {
+		t.Parallel()
+
+		authToken := "auth-token-" + uniqueToken()
+		h, b := newHandler(t, WithSummaryWriter(io.Discard))
+		req := httptest.NewRequest(http.MethodGet, "/", bytes.NewBufferString(""))
+		req.Header.Set("X-Auth-Token", authToken)
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.NotContains(t, b.String(), authToken, "X-Auth-Token must be in default redaction set")
+	})
+
+	t.Run("default_set_redacts_x_auth_token_response", func(t *testing.T) {
+		t.Parallel()
+
+		authToken := "auth-token-response-" + uniqueToken()
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			w.Header().Set("X-Auth-Token", authToken)
+			_, _ = w.Write([]byte("ok"))
+		}, WithSummaryWriter(io.Discard))
+
+		req := httptest.NewRequest(http.MethodGet, "/", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+		h(res, req)
+
+		require.NotContains(t, b.String(), authToken, "X-Auth-Token in response must be redacted")
+	})
 }
 
 // TestSummaryWriter exercises WithSummaryWriter in full.
