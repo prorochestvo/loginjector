@@ -24,45 +24,6 @@ import (
 	"github.com/prorochestvo/loginjector/levels"
 )
 
-// ErrClosed is returned by Flush after shutdown has started.
-var ErrClosed = errors.New("axiom: handler is closed")
-
-// Token is an Axiom API token with ingest permission.
-type Token string
-
-// Dataset is the name of an Axiom dataset.
-type Dataset string
-
-type stringJSONBuffer struct {
-	buf bytes.Buffer
-	enc *json.Encoder
-}
-
-var stringJSONPool = sync.Pool{New: func() any {
-	return newStringJSONBuffer()
-}}
-
-func newStringJSONBuffer() *stringJSONBuffer {
-	item := &stringJSONBuffer{}
-	item.enc = json.NewEncoder(
-		&item.buf,
-	)
-	item.enc.SetEscapeHTML(false)
-	return item
-}
-
-// Stats reports event counts, not batch counts.
-type Stats struct {
-	Sent    uint64 // Events successfully delivered.
-	Dropped uint64 // Events refused at admission.
-	Failed  uint64 // Events whose delivery failed.
-}
-
-type queuedEvent struct {
-	line []byte
-	cost int64
-}
-
 // Handler asynchronously batches events for delivery to Axiom. The zero value
 // is unusable; construct a Handler with NewHandler.
 type Handler struct {
@@ -180,8 +141,6 @@ func NewHandler(token Token, dataset Dataset, opts ...Option) (*Handler, error) 
 	go h.run(workerCtx)
 	return h, nil
 }
-
-func checkRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // Format keeps every fmt verb from exposing private configuration fields.
 func (h *Handler) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, "Axiom Handler") }
@@ -359,19 +318,17 @@ func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
 	return dst, nil
 }
 
-func appendJSONString(dst []byte, value string) ([]byte, error) {
-	item, ok := stringJSONPool.Get().(*stringJSONBuffer)
-	if !ok {
-		item = newStringJSONBuffer()
-	}
-	item.buf.Reset()
-	err := item.enc.Encode(value)
-	if err == nil {
-		encoded := item.buf.Bytes()
-		dst = append(dst, encoded[:len(encoded)-1]...)
-	}
-	stringJSONPool.Put(item)
-	return dst, err
+// Token is an Axiom API token with ingest permission.
+type Token string
+
+// Dataset is the name of an Axiom dataset.
+type Dataset string
+
+// Stats reports event counts, not batch counts.
+type Stats struct {
+	Sent    uint64 // Events successfully delivered.
+	Dropped uint64 // Events refused at admission.
+	Failed  uint64 // Events whose delivery failed.
 }
 
 const (
@@ -389,12 +346,55 @@ const (
 	userAgent            = "loginjector-axiom"
 )
 
+// ErrClosed is returned by Flush after shutdown has started.
+var ErrClosed = errors.New("axiom: handler is closed")
+
+var stringJSONPool = sync.Pool{New: func() any {
+	return newStringJSONBuffer()
+}}
+
+type stringJSONBuffer struct {
+	buf bytes.Buffer
+	enc *json.Encoder
+}
+
+type queuedEvent struct {
+	line []byte
+	cost int64
+}
+
 type event struct {
 	time      time.Time
 	level     loginjector.LogLevel
 	hasLevel  bool
 	message   string
 	truncated bool
+}
+
+func newStringJSONBuffer() *stringJSONBuffer {
+	item := &stringJSONBuffer{}
+	item.enc = json.NewEncoder(
+		&item.buf,
+	)
+	item.enc.SetEscapeHTML(false)
+	return item
+}
+
+func checkRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+func appendJSONString(dst []byte, value string) ([]byte, error) {
+	item, ok := stringJSONPool.Get().(*stringJSONBuffer)
+	if !ok {
+		item = newStringJSONBuffer()
+	}
+	item.buf.Reset()
+	err := item.enc.Encode(value)
+	if err == nil {
+		encoded := item.buf.Bytes()
+		dst = append(dst, encoded[:len(encoded)-1]...)
+	}
+	stringJSONPool.Put(item)
+	return dst, err
 }
 
 func newEvent(now time.Time, level loginjector.LogLevel, hasLevel bool, p []byte) event {

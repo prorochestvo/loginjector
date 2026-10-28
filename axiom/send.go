@@ -14,22 +14,6 @@ import (
 	"time"
 )
 
-const (
-	maxResponseBytes = 1 << 20
-	errorBodyBytes   = 1 << 10
-	errorInterval    = 30 * time.Second
-	maxRetryAfter    = 30 * time.Second
-	maxRetryBackoff  = 10 * time.Second
-)
-
-type ingestResponse struct {
-	Ingested int `json:"ingested"`
-	Failed   int `json:"failed"`
-	Failures []struct {
-		Error string `json:"error"`
-	} `json:"failures"`
-}
-
 func (h *Handler) run(ctx context.Context) {
 	defer close(h.done)
 	ticker := time.NewTicker(h.cfg.flushInterval)
@@ -454,28 +438,6 @@ func (h *Handler) reportDrops() {
 	}
 }
 
-func summaryError(err error, suppressed, dropDelta uint64) error {
-	message := ""
-	if err != nil {
-		message = err.Error()
-	}
-	if suppressed > 0 {
-		if message == "" {
-			message = fmt.Sprintf("axiom: suppressed %d additional errors", suppressed)
-		} else {
-			message += fmt.Sprintf(" (suppressed %d additional errors)", suppressed)
-		}
-	}
-	if dropDelta > 0 {
-		if message == "" {
-			message = fmt.Sprintf("axiom: dropped %d events", dropDelta)
-		} else {
-			message += fmt.Sprintf(" (axiom: dropped %d events)", dropDelta)
-		}
-	}
-	return errors.New(message)
-}
-
 func (h *Handler) redact(s string) string {
 	return strings.ReplaceAll(s, h.cfg.token, "[redacted]")
 }
@@ -499,6 +461,44 @@ func (h *Handler) responseError(status int, body []byte) error {
 	return errors.New(
 		h.redact(msg),
 	)
+}
+
+const (
+	maxResponseBytes = 1 << 20
+	errorBodyBytes   = 1 << 10
+	errorInterval    = 30 * time.Second
+	maxRetryAfter    = 30 * time.Second
+	maxRetryBackoff  = 10 * time.Second
+)
+
+type ingestResponse struct {
+	Ingested int `json:"ingested"`
+	Failed   int `json:"failed"`
+	Failures []struct {
+		Error string `json:"error"`
+	} `json:"failures"`
+}
+
+func summaryError(err error, suppressed, dropDelta uint64) error {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	if suppressed > 0 {
+		if message == "" {
+			message = fmt.Sprintf("axiom: suppressed %d additional errors", suppressed)
+		} else {
+			message += fmt.Sprintf(" (suppressed %d additional errors)", suppressed)
+		}
+	}
+	if dropDelta > 0 {
+		if message == "" {
+			message = fmt.Sprintf("axiom: dropped %d events", dropDelta)
+		} else {
+			message += fmt.Sprintf(" (axiom: dropped %d events)", dropDelta)
+		}
+	}
+	return errors.New(message)
 }
 
 func retryBackoff(attempt int) time.Duration {
