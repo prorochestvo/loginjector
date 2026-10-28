@@ -29,9 +29,7 @@ type LeveledHandler interface {
 // LevelWriter is an optional interface a handler or hook may implement to receive
 // the severity of each message. Implementations must not retain p after returning.
 // When a sink implements LevelWriter, Logger.WriteLog calls WriteLevel instead of
-// Write. Package handlers that wrap a user writer through a closure, such as
-// TimestampedHandler(ax), do not forward the level. An existing user type that
-// already has a WriteLevel(LogLevel, []byte) method now receives calls through it.
+// Write.
 type LevelWriter interface {
 	io.Writer
 	WriteLevel(level LogLevel, p []byte) (n int, err error)

@@ -70,8 +70,9 @@ option — is on [pkg.go.dev](https://pkg.go.dev/github.com/prorochestvo/loginje
 ## Axiom
 
 The opt-in `axiom` package sends log events asynchronously to an Axiom dataset. Create an
-API token with ingest permission (`xaat-` token; personal `xapt-` tokens are rejected),
-then pass the handler to a `Logger`. The domain option takes a bare host name; its default
+`axiom.Token` containing an API token with ingest permission (`xaat-` token; personal
+`xapt-` tokens are rejected) and an `axiom.Dataset`, then pass the handler to a `Logger`.
+The domain option takes a bare host name; its default
 is `us-east-1.aws.edge.axiom.co`.
 
 ```go
@@ -84,9 +85,12 @@ import (
 )
 
 func configure() error {
-	ax, err := axiom.NewHandler(os.Getenv("AXIOM_TOKEN"), "app-logs",
+	ax, err := axiom.NewHandler(
+		axiom.Token(os.Getenv("AXIOM_TOKEN")),
+		"app-logs",
 		axiom.WithDomain("eu-central-1.aws.edge.axiom.co"),
-		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}))
+		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}),
+	)
 	if err != nil {
 		return err
 	}

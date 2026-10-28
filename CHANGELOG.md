@@ -8,7 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- `LevelWriter` for sinks that need the message severity, and the opt-in `axiom` package for asynchronous Axiom ingest.
+- `LevelWriter` for sinks that need the message severity, and the opt-in `axiom` package for asynchronous Axiom ingest. `axiom.NewHandler` accepts `axiom.Token` and `axiom.Dataset` values.
 - `httptap.WithRedactQueryParams(names...)` — additive-only option for
   `NewPayloadHandlerWithOptions` to redact query-parameter values. The default set
   (`access_token`, `refresh_token`, `id_token`, `client_secret`, `api_key`, `apikey`,

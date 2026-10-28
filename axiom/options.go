@@ -8,19 +8,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector"
 )
 
 // Option configures an Axiom Handler.
 type Option func(*config) error
-
-var errorOutput io.Writer = os.Stderr
 
 // WithDomain sets the bare Axiom edge host. The default is
 // "us-east-1.aws.edge.axiom.co".
@@ -62,8 +59,8 @@ func WithLevelName(fn func(loginjector.LogLevel) string) Option {
 // 10000. The default is 1000.
 func WithBatchSize(n int) Option {
 	return func(cfg *config) error {
-		if n < 1 || n > 10000 {
-			return fmt.Errorf("batch size must be between 1 and 10000: %d", n)
+		if n < 1 || n > maxBatchSize {
+			return fmt.Errorf("batch size must be between 1 and %d: %d", maxBatchSize, n)
 		}
 		cfg.batchSize = n
 		return nil
@@ -74,7 +71,7 @@ func WithBatchSize(n int) Option {
 // least 1 MiB. The default is 4 MiB.
 func WithMaxBatchBytes(n int) Option {
 	return func(cfg *config) error {
-		if n < 1<<20 {
+		if n < minBatchBytes {
 			return fmt.Errorf("maximum batch bytes must be at least 1 MiB: %d", n)
 		}
 		cfg.maxBatchBytes = n
@@ -98,8 +95,8 @@ func WithFlushInterval(d time.Duration) Option {
 // 1048576. The default is 10000.
 func WithQueueSize(n int) Option {
 	return func(cfg *config) error {
-		if n <= 0 || n > 1<<20 {
-			return fmt.Errorf("queue size must be between 1 and 1048576: %d", n)
+		if n <= 0 || n > maxQueueSize {
+			return fmt.Errorf("queue size must be between 1 and %d: %d", maxQueueSize, n)
 		}
 		cfg.queueSize = n
 		return nil
@@ -186,19 +183,9 @@ type config struct {
 	maxRetries    int
 	compression   bool
 	errorHandler  func(error)
+	errorOutput   io.Writer
 	now           func() time.Time
 	wait          func(context.Context, time.Duration) bool
-}
-
-func withClock(now func() time.Time, wait func(context.Context, time.Duration) bool) Option {
-	return func(cfg *config) error {
-		if now == nil || wait == nil {
-			return errors.New("clock functions must not be nil")
-		}
-		cfg.now = now
-		cfg.wait = wait
-		return nil
-	}
 }
 
 func encodeFields(fields map[string]any) ([]byte, error) {
@@ -230,7 +217,7 @@ func encodeFields(fields map[string]any) ([]byte, error) {
 	return encoded[1 : len(encoded)-1], nil
 }
 
-func validDomain(domain string) error {
+func validateDomain(domain string) error {
 	if domain == "" || strings.Contains(domain, "://") || strings.ContainsAny(domain, "/?#@") {
 		return errors.New("domain must be a bare host")
 	}
@@ -239,25 +226,23 @@ func validDomain(domain string) error {
 			return errors.New("domain must be a bare host")
 		}
 	}
-	parsed, err := url.Parse("https://" + domain)
+	parsed, err := url.Parse(
+		"https://" + domain,
+	)
 	if err != nil || parsed.Host != domain || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
 		return errors.New("domain must be a bare host")
 	}
 	return nil
 }
 
-func defaultErrorHandler(err error) {
-	message := strings.NewReplacer("\r", `\r`, "\n", `\n`).Replace(err.Error())
-	_, _ = fmt.Fprintln(errorOutput, message)
-}
-
-func withBaseURL(baseURL string) Option {
-	return func(cfg *config) error {
-		parsed, err := url.Parse(baseURL)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" {
-			return errors.New("base URL must contain only a scheme and host")
-		}
-		cfg.baseURL = strings.TrimSuffix(baseURL, "/")
-		return nil
-	}
+func defaultErrorHandler(output io.Writer, err error) {
+	message := strings.NewReplacer(
+		"\r",
+		`\r`,
+		"\n",
+		`\n`,
+	).Replace(
+		err.Error(),
+	)
+	_, _ = fmt.Fprintln(output, message)
 }

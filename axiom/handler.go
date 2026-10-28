@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,12 +20,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector"
 	"github.com/prorochestvo/loginjector/levels"
 )
 
 // ErrClosed is returned by Flush after shutdown has started.
 var ErrClosed = errors.New("axiom: handler is closed")
+
+// Token is an Axiom API token with ingest permission.
+type Token string
+
+// Dataset is the name of an Axiom dataset.
+type Dataset string
 
 type stringJSONBuffer struct {
 	buf bytes.Buffer
@@ -32,17 +39,23 @@ type stringJSONBuffer struct {
 }
 
 var stringJSONPool = sync.Pool{New: func() any {
+	return newStringJSONBuffer()
+}}
+
+func newStringJSONBuffer() *stringJSONBuffer {
 	item := &stringJSONBuffer{}
-	item.enc = json.NewEncoder(&item.buf)
+	item.enc = json.NewEncoder(
+		&item.buf,
+	)
 	item.enc.SetEscapeHTML(false)
 	return item
-}}
+}
 
 // Stats reports event counts, not batch counts.
 type Stats struct {
-	Sent    uint64
-	Dropped uint64
-	Failed  uint64
+	Sent    uint64 // Events successfully delivered.
+	Dropped uint64 // Events refused at admission.
+	Failed  uint64 // Events whose delivery failed.
 }
 
 type queuedEvent struct {
@@ -50,7 +63,8 @@ type queuedEvent struct {
 	cost int64
 }
 
-// Handler asynchronously batches events for delivery to Axiom.
+// Handler asynchronously batches events for delivery to Axiom. The zero value
+// is unusable; construct a Handler with NewHandler.
 type Handler struct {
 	cfg          *config
 	mu           sync.RWMutex
@@ -60,7 +74,7 @@ type Handler struct {
 	done         chan struct{}
 	shutdownOnce sync.Once
 	cancel       context.CancelFunc
-	inFlight     atomic.Int64
+	pendingBytes atomic.Int64
 	admitted     atomic.Uint64
 	completed    atomic.Uint64
 	progress     chan struct{}
@@ -77,22 +91,26 @@ type Handler struct {
 }
 
 // NewHandler validates the token, dataset, and options and starts a delivery worker.
-func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
-	if token == "" {
+// The token must be an Axiom API token with ingest permission, and the dataset is
+// the name of the destination dataset.
+func NewHandler(token Token, dataset Dataset, opts ...Option) (*Handler, error) {
+	tokenString := string(token)
+	datasetString := string(dataset)
+	if tokenString == "" {
 		return nil, errors.New("axiom: token must not be empty")
 	}
-	if strings.HasPrefix(token, "xapt-") {
+	if strings.HasPrefix(tokenString, "xapt-") {
 		return nil, errors.New("axiom: an xaat- API token with ingest permission is required; personal tokens are not supported")
 	}
-	for _, r := range token {
-		if unicode.IsSpace(r) || unicode.IsControl(r) || r < 0x20 || r == 0x7f {
+	for _, r := range tokenString {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
 			return nil, errors.New("axiom: token contains whitespace or a control character")
 		}
 	}
-	if dataset == "" {
+	if datasetString == "" {
 		return nil, errors.New("axiom: dataset must not be empty")
 	}
-	if strings.Contains(dataset, "/") {
+	if strings.Contains(datasetString, "/") {
 		return nil, errors.New("axiom: dataset must not contain a slash")
 	}
 
@@ -101,33 +119,47 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 		transport = &http.Transport{}
 	}
 	cfg := config{
-		token:         token,
-		dataset:       dataset,
+		token:         tokenString,
+		dataset:       datasetString,
 		domain:        defaultDomain,
 		levelName:     levels.Name,
-		batchSize:     1000,
-		maxBatchBytes: 4 << 20,
+		batchSize:     defaultBatchSize,
+		maxBatchBytes: defaultMaxBatchBytes,
 		flushInterval: time.Second,
-		queueSize:     10000,
-		maxQueueBytes: 32 << 20,
-		httpClient:    &http.Client{Timeout: 10 * time.Second, Transport: transport.Clone(), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		ownsClient:    true,
-		maxRetries:    3,
-		compression:   true,
-		errorHandler:  defaultErrorHandler,
-		now:           time.Now,
-		wait:          waitRetry,
+		queueSize:     defaultQueueSize,
+		maxQueueBytes: defaultMaxQueueBytes,
+		httpClient: &http.Client{
+			Timeout:       defaultHTTPTimeout,
+			Transport:     transport.Clone(),
+			CheckRedirect: checkRedirect,
+		},
+		ownsClient:  true,
+		maxRetries:  defaultMaxRetries,
+		compression: true,
+		errorOutput: os.Stderr,
+		now:         time.Now,
+		wait:        waitRetry,
 	}
+	cfg.errorHandler = func(err error) { defaultErrorHandler(cfg.errorOutput, err) }
 	for i, opt := range opts {
 		if opt == nil {
-			return nil, fmt.Errorf("axiom: apply option %d: option must not be nil", i+1)
+			return nil, fmt.Errorf(
+				"axiom: apply option %d: option must not be nil",
+				i+1,
+			)
 		}
-		if err := opt(&cfg); err != nil {
-			return nil, fmt.Errorf("axiom: apply option %d: %w", i+1, err)
+		if err := opt(
+			&cfg,
+		); err != nil {
+			return nil, fmt.Errorf(
+				"axiom: apply option %d: %w",
+				i+1,
+				err,
+			)
 		}
 	}
 	if cfg.baseURL == "" {
-		if err := validDomain(cfg.domain); err != nil {
+		if err := validateDomain(cfg.domain); err != nil {
 			return nil, fmt.Errorf("axiom: %w", err)
 		}
 		cfg.baseURL = "https://" + cfg.domain
@@ -135,15 +167,21 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 	if cfg.maxQueueBytes < cfg.maxBatchBytes {
 		return nil, errors.New("axiom: maximum queue bytes must be at least maximum batch bytes")
 	}
-	cfg.ingestURL = strings.TrimSuffix(cfg.baseURL, "/") + "/v1/ingest/" + url.PathEscape(dataset)
-	workerCtx, cancel := context.WithCancel(context.Background())
+	cfg.ingestURL = strings.TrimSuffix(cfg.baseURL, "/") + "/v1/ingest/" + url.PathEscape(datasetString)
+	workerCtx, cancel := context.WithCancel(
+		context.Background(),
+	)
 	h := &Handler{cfg: &cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}), cancel: cancel}
 	if cfg.compression {
-		h.gzipWriter = gzip.NewWriter(&h.compressBuf)
+		h.gzipWriter = gzip.NewWriter(
+			&h.compressBuf,
+		)
 	}
 	go h.run(workerCtx)
 	return h, nil
 }
+
+func checkRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // Format keeps every fmt verb from exposing private configuration fields.
 func (h *Handler) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, "Axiom Handler") }
@@ -226,7 +264,10 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 
 // Close shuts down the handler with a five second deadline.
 func (h *Handler) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
 	defer cancel()
 	return h.Shutdown(ctx)
 }
@@ -237,17 +278,26 @@ func (h *Handler) Stats() Stats {
 }
 
 func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (int, error) {
-	msg := newEvent(h.cfg.now(), level, hasLevel, p)
+	msg := newEvent(
+		h.cfg.now(),
+		level,
+		hasLevel,
+		p,
+	)
 	encoded, err := h.appendEvent(nil, msg)
 	if err != nil {
 		return 0, err
 	}
-	cost := int64(len(encoded))
+	cost := int64(
+		len(encoded),
+	)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	if h.closed || h.inFlight.Add(cost) > int64(h.cfg.maxQueueBytes) {
+	if h.closed || h.pendingBytes.Add(cost) > int64(h.cfg.maxQueueBytes) {
 		if !h.closed {
-			h.inFlight.Add(-cost)
+			h.pendingBytes.Add(
+				-cost,
+			)
 		}
 		h.dropped.Add(1)
 		return len(p), nil
@@ -256,7 +306,9 @@ func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (in
 	case h.queue <- queuedEvent{line: encoded, cost: cost}:
 		h.admitted.Add(1)
 	default:
-		h.inFlight.Add(-cost)
+		h.pendingBytes.Add(
+			-cost,
+		)
 		h.dropped.Add(1)
 	}
 	return len(p), nil
@@ -264,7 +316,10 @@ func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (in
 
 // appendEvent appends one NDJSON event to dst.
 func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
-	dst = slices.Grow(dst, len(ev.message)+len(h.cfg.fields)+128)
+	dst = slices.Grow(
+		dst,
+		len(ev.message)+len(h.cfg.fields)+128,
+	)
 	dst = append(dst, '{')
 	dst = append(dst, `"_time":`...)
 	dst = append(dst, '"')
@@ -273,12 +328,19 @@ func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
 	if ev.hasLevel {
 		dst = append(dst, `,"level":`...)
 		var marshalErr error
-		dst, marshalErr = appendJSONString(dst, h.cfg.levelName(ev.level))
+		dst, marshalErr = appendJSONString(
+			dst,
+			h.cfg.levelName(ev.level),
+		)
 		if marshalErr != nil {
 			return nil, fmt.Errorf("encode level name: %w", marshalErr)
 		}
 		dst = append(dst, `,"level_num":`...)
-		dst = strconv.AppendInt(dst, int64(ev.level), 10)
+		dst = strconv.AppendInt(
+			dst,
+			int64(ev.level),
+			10,
+		)
 	}
 	dst = append(dst, `,"message":`...)
 	var err error
@@ -300,9 +362,7 @@ func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
 func appendJSONString(dst []byte, value string) ([]byte, error) {
 	item, ok := stringJSONPool.Get().(*stringJSONBuffer)
 	if !ok {
-		item = &stringJSONBuffer{}
-		item.enc = json.NewEncoder(&item.buf)
-		item.enc.SetEscapeHTML(false)
+		item = newStringJSONBuffer()
 	}
 	item.buf.Reset()
 	err := item.enc.Encode(value)
@@ -315,9 +375,18 @@ func appendJSONString(dst []byte, value string) ([]byte, error) {
 }
 
 const (
-	defaultDomain = "us-east-1.aws.edge.axiom.co"
-	maxMessageLen = 512 << 10
-	userAgent     = "loginjector-axiom"
+	defaultDomain        = "us-east-1.aws.edge.axiom.co"
+	defaultBatchSize     = 1000
+	defaultMaxBatchBytes = 4 << 20
+	defaultQueueSize     = 10000
+	defaultMaxQueueBytes = 32 << 20
+	defaultMaxRetries    = 3
+	defaultHTTPTimeout   = 10 * time.Second
+	maxBatchSize         = 10000
+	minBatchBytes        = 1 << 20
+	maxQueueSize         = 1 << 20
+	maxMessageLen        = 512 << 10
+	userAgent            = "loginjector-axiom"
 )
 
 type event struct {

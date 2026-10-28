@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector"
 	"github.com/prorochestvo/loginjector/axiom"
 	"github.com/prorochestvo/loginjector/levels"
 	"github.com/stretchr/testify/require"
@@ -23,7 +23,11 @@ func TestIntegration_smokeIngest(t *testing.T) {
 		t.Skip("set AXIOM_TOKEN, AXIOM_DATASET, and AXIOM_DOMAIN to run the Axiom integration test")
 	}
 
-	handler, err := axiom.NewHandler(token, dataset, axiom.WithDomain(domain))
+	handler, err := axiom.NewHandler(
+		axiom.Token(token),
+		axiom.Dataset(dataset),
+		axiom.WithDomain(domain),
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := handler.Close(); err != nil {
@@ -42,19 +46,34 @@ func TestIntegration_smokeIngest(t *testing.T) {
 		{level: levels.Warning, message: "warning event"},
 		{level: levels.Error, message: "error event"},
 	} {
-		_, err := handler.WriteLevel(event.level, []byte(fmt.Sprintf("%s %s", runID, event.message)))
+		_, err := handler.WriteLevel(
+			event.level,
+			[]byte(
+				fmt.Sprintf("%s %s", runID, event.message),
+			),
+		)
 		require.NoError(t, err)
 	}
 
 	const payloadBytes = 500 << 10
 	prefix := runID + " "
-	padding := strings.Repeat("x", payloadBytes-len(prefix))
-	for i := 0; i < 8; i++ {
-		_, err := handler.Write([]byte(prefix + padding))
+	padding := strings.Repeat(
+		"x",
+		payloadBytes-len(prefix),
+	)
+	for range 8 {
+		_, err := handler.Write(
+			[]byte(
+				prefix + padding,
+			),
+		)
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, handler.Close())
+	require.NoError(
+		t,
+		handler.Close(),
+	)
 	stats := handler.Stats()
 	require.EqualValues(t, 0, stats.Failed)
 	require.EqualValues(t, 0, stats.Dropped)

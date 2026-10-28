@@ -1168,8 +1168,6 @@ func (w *writer) mutex() *sync.Mutex {
 	return &w.m
 }
 
-var _ LevelWriter = (*writer)(nil)
-
 // listRotation lists non-directory entries whose names end with one of suffixes. It
 // reads the directory directly so metacharacters in folder names are treated literally.
 // Missing folders are a no-op; other listing errors are returned. Callers filter the

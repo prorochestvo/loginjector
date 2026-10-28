@@ -9,20 +9,38 @@ import (
 )
 
 func ExampleNewHandler() {
-	ax, err := axiom.NewHandler(os.Getenv("AXIOM_TOKEN"), "app-logs",
+	ax, err := axiom.NewHandler(
+
+		axiom.Token(
+			os.Getenv("AXIOM_TOKEN"),
+		),
+
+		"app-logs",
+
 		axiom.WithDomain("eu-central-1.aws.edge.axiom.co"),
-		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}))
+
+		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}),
+	)
 	if err != nil {
 		return
 	}
 	defer ax.Close()
-	logger := loginjector.NewLogger(levels.Info, loginjector.TimestampedPrintHandler(), ax)
+	logger := loginjector.NewLogger(
+		levels.Info,
+		loginjector.TimestampedPrintHandler(),
+		ax,
+	)
 	std := logger.StdLog(levels.Info, "")
 	std.Printf("started")
 }
 
 func ExampleHandler_withMinLevel() {
-	ax, err := axiom.NewHandler(os.Getenv("AXIOM_TOKEN"), "app-logs")
+	ax, err := axiom.NewHandler(
+		axiom.Token(
+			os.Getenv("AXIOM_TOKEN"),
+		),
+		"app-logs",
+	)
 	if err != nil {
 		return
 	}

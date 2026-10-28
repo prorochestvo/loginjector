@@ -18,6 +18,8 @@ const (
 	maxResponseBytes = 1 << 20
 	errorBodyBytes   = 1 << 10
 	errorInterval    = 30 * time.Second
+	maxRetryAfter    = 30 * time.Second
+	maxRetryBackoff  = 10 * time.Second
 )
 
 type ingestResponse struct {
@@ -41,20 +43,37 @@ func (h *Handler) run(ctx context.Context) {
 		var payload []byte
 		var err error
 		if h.cfg.compression {
-			payload, err = h.compressPayload(encoded.Bytes())
+			payload, err = h.compressPayload(
+				encoded.Bytes(),
+			)
 		} else {
-			payload = append([]byte(nil), encoded.Bytes()...)
+			payload = append(
+				[]byte(nil),
+				encoded.Bytes()...,
+			)
 		}
 		if err != nil {
-			h.failed.Add(uint64(len(batch)))
+			h.failed.Add(
+				uint64(
+					len(batch),
+				),
+			)
 			h.release(batch)
 			h.report(err)
-			h.complete(uint64(len(batch)))
+			h.complete(
+				uint64(
+					len(batch),
+				),
+			)
 			batch = batch[:0]
 			encoded.Reset()
 			return
 		}
-		h.deliver(ctx, payload, len(batch))
+		h.deliver(
+			ctx,
+			payload,
+			len(batch),
+		)
 		h.release(batch)
 		batch = batch[:0]
 		encoded.Reset()
@@ -77,15 +96,15 @@ func (h *Handler) run(ctx context.Context) {
 			flush()
 			h.reportDrops()
 		case <-h.wake:
+		drainQueue:
 			for {
 				select {
 				case item := <-h.queue:
 					add(item)
 				default:
-					goto drained
+					break drainQueue
 				}
 			}
-		drained:
 			flush()
 		case <-ctx.Done():
 			for {
@@ -94,8 +113,16 @@ func (h *Handler) run(ctx context.Context) {
 					batch = append(batch, item)
 				default:
 					if len(batch) > 0 {
-						h.failed.Add(uint64(len(batch)))
-						h.complete(uint64(len(batch)))
+						h.failed.Add(
+							uint64(
+								len(batch),
+							),
+						)
+						h.complete(
+							uint64(
+								len(batch),
+							),
+						)
 						h.release(batch)
 					}
 					h.reportDrops()
@@ -120,14 +147,19 @@ func (h *Handler) run(ctx context.Context) {
 
 func (h *Handler) compressPayload(payload []byte) ([]byte, error) {
 	h.compressBuf.Reset()
-	h.gzipWriter.Reset(&h.compressBuf)
+	h.gzipWriter.Reset(
+		&h.compressBuf,
+	)
 	if _, err := h.gzipWriter.Write(payload); err != nil {
 		return nil, fmt.Errorf("axiom: compress batch: %w", err)
 	}
 	if err := h.gzipWriter.Close(); err != nil {
 		return nil, fmt.Errorf("axiom: finish batch compression: %w", err)
 	}
-	return append([]byte(nil), h.compressBuf.Bytes()...), nil
+	return append(
+		[]byte(nil),
+		h.compressBuf.Bytes()...,
+	), nil
 }
 
 func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
@@ -137,12 +169,23 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			finalErr = ctx.Err()
 			break
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.cfg.ingestURL, bytes.NewReader(payload))
+		req, err := http.NewRequestWithContext(
+			ctx,
+			http.MethodPost,
+			h.cfg.ingestURL,
+			bytes.NewReader(payload),
+		)
 		if err != nil {
-			finalErr = fmt.Errorf("axiom: create ingest request: %w", err)
+			msg := fmt.Sprintf("axiom: create ingest request: %v", err)
+			finalErr = errors.New(
+				h.redact(msg),
+			)
 			break
 		}
-		req.Header.Set("Authorization", "Bearer "+h.cfg.token)
+		req.Header.Set(
+			"Authorization",
+			"Bearer "+h.cfg.token,
+		)
 		req.Header.Set("Content-Type", "application/x-ndjson")
 		req.Header.Set("User-Agent", userAgent)
 		if h.cfg.compression {
@@ -150,13 +193,21 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 		}
 		resp, doErr := h.cfg.httpClient.Do(req)
 		if doErr != nil {
-			finalErr = fmt.Errorf("axiom: ingest request failed: %w", doErr)
-			if attempt < h.cfg.maxRetries && h.cfg.wait(ctx, retryBackoff(attempt)) {
+			msg := fmt.Sprintf("axiom: ingest request failed: %v", doErr)
+			finalErr = errors.New(
+				h.redact(msg),
+			)
+			if attempt < h.cfg.maxRetries && h.cfg.wait(
+				ctx,
+				retryBackoff(attempt),
+			) {
 				continue
 			}
 			break
 		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		body, readErr := io.ReadAll(
+			io.LimitReader(resp.Body, maxResponseBytes),
+		)
 		_, drainErr := io.CopyN(io.Discard, resp.Body, maxResponseBytes)
 		if errors.Is(drainErr, io.EOF) {
 			drainErr = nil
@@ -164,8 +215,14 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 		closeErr := resp.Body.Close()
 		bodyErr := errors.Join(readErr, drainErr, closeErr)
 		if bodyErr != nil {
-			finalErr = fmt.Errorf("axiom: read or close response body: %w", bodyErr)
-			if attempt < h.cfg.maxRetries && h.cfg.wait(ctx, retryBackoff(attempt)) {
+			msg := fmt.Sprintf("axiom: read or close response body: %v", bodyErr)
+			finalErr = errors.New(
+				h.redact(msg),
+			)
+			if attempt < h.cfg.maxRetries && h.cfg.wait(
+				ctx,
+				retryBackoff(attempt),
+			) {
 				continue
 			}
 			break
@@ -173,64 +230,37 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 		switch {
 		case resp.StatusCode == http.StatusOK:
 			var result ingestResponse
-			if err := json.Unmarshal(body, &result); err != nil {
-				h.failed.Add(uint64(count))
-				h.report(fmt.Errorf("axiom: decode HTTP 200 response: %w", err))
-				h.complete(uint64(count))
+			if err := json.Unmarshal(
+				body,
+				&result,
+			); err != nil {
+				h.failed.Add(
+					uint64(count),
+				)
+				msg := fmt.Sprintf("axiom: decode HTTP 200 response: %v", err)
+				h.report(
+					errors.New(
+						h.redact(msg),
+					),
+				)
+				h.complete(
+					uint64(count),
+				)
 				return
 			}
-			ing := result.Ingested
-			if ing < 0 {
-				ing = 0
-			}
-			if ing > count {
-				ing = count
-			}
-			fl := result.Failed
-			if fl < 0 {
-				fl = 0
-			}
-			if fl > count-ing {
-				fl = count - ing
-			}
-			inconsistent := result.Ingested != ing || result.Failed != fl || ing+fl != count
-			h.sent.Add(uint64(ing))
-			h.failed.Add(uint64(fl))
-			var accountingErr error
-			if remainder := count - ing - fl; inconsistent || remainder > 0 {
-				h.failed.Add(uint64(remainder))
-				if remainder > 0 {
-					accountingErr = fmt.Errorf("axiom: response accounted for %d of %d events", ing+fl, count)
-				} else {
-					accountingErr = fmt.Errorf("axiom: response counts were inconsistent: ingested %d, failed %d for %d events", result.Ingested, result.Failed, count)
-				}
-			}
-			var failedErr error
-			if result.Failed > 0 {
-				reason := "Axiom reported failed events"
-				if len(result.Failures) > 0 && result.Failures[0].Error != "" {
-					reason = strings.ReplaceAll(result.Failures[0].Error, h.cfg.token, "[redacted]")
-					if len(reason) > errorBodyBytes {
-						reason = reason[:errorBodyBytes]
-					}
-				}
-				failedErr = fmt.Errorf("axiom: %d events failed: %s", result.Failed, reason)
-			}
-			switch {
-			case failedErr != nil && accountingErr != nil:
-				h.report(fmt.Errorf("%w (%w)", failedErr, accountingErr))
-			case failedErr != nil:
-				h.report(failedErr)
-			case accountingErr != nil:
-				h.report(accountingErr)
-			}
-			h.complete(uint64(count))
+			h.accountResponse(result, count)
+			h.complete(
+				uint64(count),
+			)
 			return
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-			finalErr = responseError(resp.StatusCode, body, h.cfg.token)
+			finalErr = h.responseError(resp.StatusCode, body)
 			if attempt < h.cfg.maxRetries {
 				delay := retryBackoff(attempt)
-				if d, ok := parseRetryAfter(resp.Header.Get("Retry-After"), h.cfg.now()); ok {
+				if d, ok := parseRetryAfter(
+					resp.Header.Get("Retry-After"),
+					h.cfg.now(),
+				); ok {
 					delay = d
 				}
 				if h.cfg.wait(ctx, delay) {
@@ -238,18 +268,90 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 				}
 			}
 		default:
-			h.failed.Add(uint64(count))
-			h.report(responseError(resp.StatusCode, body, h.cfg.token))
-			h.complete(uint64(count))
+			h.failed.Add(
+				uint64(count),
+			)
+			h.report(
+				h.responseError(resp.StatusCode, body),
+			)
+			h.complete(
+				uint64(count),
+			)
 			return
 		}
 		break
 	}
-	h.failed.Add(uint64(count))
+	h.failed.Add(
+		uint64(count),
+	)
 	if finalErr != nil {
 		h.report(finalErr)
 	}
-	h.complete(uint64(count))
+	h.complete(
+		uint64(count),
+	)
+}
+
+func (h *Handler) accountResponse(result ingestResponse, count int) {
+	ingested := min(
+		max(result.Ingested, 0),
+		count,
+	)
+	failed := min(
+		max(result.Failed, 0),
+		count-ingested,
+	)
+	inconsistent := result.Ingested != ingested || result.Failed != failed || ingested+failed != count
+	h.sent.Add(
+		uint64(ingested),
+	)
+	h.failed.Add(
+		uint64(failed),
+	)
+	var accountingErr error
+	if remainder := count - ingested - failed; inconsistent || remainder > 0 {
+		h.failed.Add(
+			uint64(remainder),
+		)
+		if remainder > 0 {
+			accountingErr = fmt.Errorf(
+				"axiom: response accounted for %d of %d events",
+				ingested+failed,
+				count,
+			)
+		} else {
+			accountingErr = fmt.Errorf(
+				"axiom: response counts were inconsistent: ingested %d, failed %d for %d events",
+				result.Ingested,
+				result.Failed,
+				count,
+			)
+		}
+	}
+	var failedErr error
+	if result.Failed > 0 {
+		reason := "Axiom reported failed events"
+		if len(result.Failures) > 0 && result.Failures[0].Error != "" {
+			reason = h.redact(result.Failures[0].Error)
+			if len(reason) > errorBodyBytes {
+				reason = reason[:errorBodyBytes]
+			}
+		}
+		failedErr = fmt.Errorf("axiom: %d events failed: %s", result.Failed, reason)
+	}
+	switch {
+	case failedErr != nil && accountingErr != nil:
+		msg := fmt.Sprintf("%s (%s)", failedErr, accountingErr)
+		h.report(
+			errors.New(
+				h.redact(msg),
+			),
+		)
+	case failedErr != nil:
+		h.report(failedErr)
+	case accountingErr != nil:
+		h.report(accountingErr)
+	}
 }
 
 func (h *Handler) complete(count uint64) {
@@ -262,13 +364,15 @@ func (h *Handler) complete(count uint64) {
 
 func (h *Handler) release(batch []queuedEvent) {
 	for _, item := range batch {
-		h.inFlight.Add(-item.cost)
+		h.pendingBytes.Add(
+			-item.cost,
+		)
 	}
 }
 
-func (h *Handler) report(err error) bool {
+func (h *Handler) report(err error) {
 	dropDelta := h.pendingDrops()
-	return h.reportWith(err, dropDelta)
+	h.reportWith(err, dropDelta)
 }
 
 func (h *Handler) pendingDrops() uint64 {
@@ -294,26 +398,24 @@ func (h *Handler) reportWith(err error, dropDelta uint64) bool {
 	h.suppressed = 0
 	h.lastError = now
 	h.errorMu.Unlock()
-	if suppressed > 0 {
-		if err == nil {
-			err = fmt.Errorf("axiom: suppressed %d additional errors", suppressed)
-		} else {
-			err = fmt.Errorf("%w (suppressed %d additional errors)", err, suppressed)
-		}
+	err = summaryError(err, suppressed, dropDelta)
+	return h.emit(err, dropDelta)
+}
+
+func (h *Handler) emit(err error, dropDelta uint64) bool {
+	if err == nil {
+		return false
 	}
-	if dropDelta > 0 {
-		if err == nil {
-			err = fmt.Errorf("axiom: dropped %d events", dropDelta)
-		} else {
-			err = fmt.Errorf("%w (axiom: dropped %d events)", err, dropDelta)
-		}
-	}
-	err = fmt.Errorf("%s", strings.ReplaceAll(err.Error(), h.cfg.token, "[redacted]"))
+	err = errors.New(
+		h.redact(
+			err.Error(),
+		),
+	)
 	called := false
 	func() {
 		defer func() {
 			if v := recover(); v != nil {
-				_, _ = fmt.Fprintf(errorOutput, "axiom: error handler panicked: %v\n", v)
+				_, _ = fmt.Fprintf(h.cfg.errorOutput, "axiom: error handler panicked: %v\n", v)
 			}
 		}()
 		h.cfg.errorHandler(err)
@@ -336,33 +438,10 @@ func (h *Handler) reportSuppressed() {
 	if suppressed == 0 && dropDelta == 0 {
 		return
 	}
-	var err error
-	if suppressed > 0 {
-		err = fmt.Errorf("axiom: suppressed %d additional errors", suppressed)
-	}
-	if dropDelta > 0 {
-		if err == nil {
-			err = fmt.Errorf("axiom: dropped %d events", dropDelta)
-		} else {
-			err = fmt.Errorf("%w (axiom: dropped %d events)", err, dropDelta)
-		}
-	}
-	err = fmt.Errorf("%s", strings.ReplaceAll(err.Error(), h.cfg.token, "[redacted]"))
-	called := false
-	func() {
-		defer func() {
-			if v := recover(); v != nil {
-				_, _ = fmt.Fprintf(errorOutput, "axiom: error handler panicked: %v\n", v)
-			}
-		}()
-		h.cfg.errorHandler(err)
-		called = true
-	}()
-	if called && dropDelta > 0 {
-		h.errorMu.Lock()
-		h.dropReported += dropDelta
-		h.errorMu.Unlock()
-	}
+	h.emit(
+		summaryError(nil, suppressed, dropDelta),
+		dropDelta,
+	)
 }
 
 func (h *Handler) reportDrops() {
@@ -375,36 +454,81 @@ func (h *Handler) reportDrops() {
 	}
 }
 
-func responseError(status int, body []byte, token string) error {
-	body = []byte(strings.ReplaceAll(string(body), token, "[redacted]"))
+func summaryError(err error, suppressed, dropDelta uint64) error {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	if suppressed > 0 {
+		if message == "" {
+			message = fmt.Sprintf("axiom: suppressed %d additional errors", suppressed)
+		} else {
+			message += fmt.Sprintf(" (suppressed %d additional errors)", suppressed)
+		}
+	}
+	if dropDelta > 0 {
+		if message == "" {
+			message = fmt.Sprintf("axiom: dropped %d events", dropDelta)
+		} else {
+			message += fmt.Sprintf(" (axiom: dropped %d events)", dropDelta)
+		}
+	}
+	return errors.New(message)
+}
+
+func (h *Handler) redact(s string) string {
+	return strings.ReplaceAll(s, h.cfg.token, "[redacted]")
+}
+
+func (h *Handler) responseError(status int, body []byte) error {
+	body = []byte(
+		h.redact(
+			string(body),
+		),
+	)
 	if len(body) > errorBodyBytes {
 		body = body[:errorBodyBytes]
 	}
-	message := strings.TrimSpace(string(body))
+	message := strings.TrimSpace(
+		string(body),
+	)
 	if message == "" {
 		return fmt.Errorf("axiom: HTTP %d", status)
 	}
-	return fmt.Errorf("axiom: HTTP %d: %s", status, message)
+	msg := fmt.Sprintf("axiom: HTTP %d: %s", status, message)
+	return errors.New(
+		h.redact(msg),
+	)
 }
 
 func retryBackoff(attempt int) time.Duration {
 	d := 250 * time.Millisecond
-	for i := 0; i < attempt && d < 10*time.Second; i++ {
+	for i := 0; i < attempt && d < maxRetryBackoff; i++ {
 		d *= 2
 	}
-	if d > 10*time.Second {
-		d = 10 * time.Second
+	if d > maxRetryBackoff {
+		d = maxRetryBackoff
 	}
-	return time.Duration(rand.Int64N(int64(d) + 1))
+	return time.Duration(
+		rand.Int64N(
+			int64(d) + 1,
+		),
+	)
 }
 
 func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
-	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+	if seconds, err := strconv.ParseInt(
+		strings.TrimSpace(value),
+		10,
+		64,
+	); err == nil {
 		if seconds < 0 {
 			return 0, false
 		}
-		if seconds >= 30 {
-			return 30 * time.Second, true
+		if seconds >= int64(
+			maxRetryAfter/time.Second,
+		) {
+			return maxRetryAfter, true
 		}
 		return time.Duration(seconds) * time.Second, true
 	}
@@ -413,8 +537,8 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 		if d < 0 {
 			d = 0
 		}
-		if d > 30*time.Second {
-			d = 30 * time.Second
+		if d > maxRetryAfter {
+			d = maxRetryAfter
 		}
 		return d, true
 	}

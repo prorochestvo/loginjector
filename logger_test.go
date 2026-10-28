@@ -19,6 +19,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	_ LevelWriter = (*writer)(nil)
+	_ LevelWriter = (*leveledWriter)(nil)
+	_ LevelWriter = (*recordingLevelWriter)(nil)
+	_ LevelWriter = (*panickingLevelWriter)(nil)
+	_ LevelWriter = (*countingLevelWriter)(nil)
+	_ LevelWriter = levelDiscardWriter{}
+)
+
 const (
 	logLevelDebug   LogLevel = 0x00
 	logLevelInfo    LogLevel = 0x01
@@ -447,12 +456,15 @@ func TestLogger_HookBelowMinimum(t *testing.T) {
 	require.Equal(t, 0, n, "below-minimum write must report n=0")
 	require.Contains(t, b.String(), m, "hook must fire even below the minimum level")
 
-	levelSink := &recordingLevelWriter{}
-	l.Hook(levelSink, logLevelDebug)
-	n, err = l.WriteLog(logLevelDebug, []byte(m))
-	require.NoError(t, err)
-	require.Equal(t, 0, n)
-	require.Equal(t, []LogLevel{logLevelDebug}, levelSink.levels)
+	t.Run("level writer hook below minimum", func(t *testing.T) {
+		t.Parallel()
+		levelSink := &recordingLevelWriter{}
+		l.Hook(levelSink, logLevelDebug)
+		n, err := l.WriteLog(logLevelDebug, []byte(m))
+		require.NoError(t, err)
+		require.Equal(t, 0, n)
+		require.Equal(t, []LogLevel{logLevelDebug}, levelSink.levels)
+	})
 }
 func TestLogger_StdLog(t *testing.T) {
 	t.Parallel()
@@ -1085,7 +1097,7 @@ func TestLogger_WriteLogForRaceCondition(t *testing.T) {
 	)
 }
 
-func TestLogger_WriteLevelForRaceCondition(t *testing.T) {
+func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
 	t.Parallel()
 	const goroutines = 24
 	const iterations = 250
@@ -1112,7 +1124,7 @@ func TestLogger_WriteLevelForRaceCondition(t *testing.T) {
 	wg.Wait()
 
 	for level := range mixedLevels {
-		// Each WriteLog reaches the direct handler and the hook at its exact level.
+		// each WriteLog reaches the direct handler and the hook at its exact level.
 		require.Equal(t, goroutines*iterations/mixedLevels*2, sink.counts[LogLevel(level)])
 	}
 	require.Equal(t, goroutines*iterations, sink.writeCalls)
@@ -1752,8 +1764,6 @@ type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
-var _ LevelWriter = (*recordingLevelWriter)(nil)
-
 type recordingLevelWriter struct {
 	levels []LogLevel
 	buf    bytes.Buffer
@@ -1766,15 +1776,11 @@ func (w *recordingLevelWriter) WriteLevel(level LogLevel, p []byte) (int, error)
 	return w.buf.Write(p)
 }
 
-var _ LevelWriter = (*panickingLevelWriter)(nil)
-
 type panickingLevelWriter struct{}
 
 func (*panickingLevelWriter) Write([]byte) (int, error) { return 0, nil }
 
 func (*panickingLevelWriter) WriteLevel(LogLevel, []byte) (int, error) { panic("level panic") }
-
-var _ LevelWriter = (*countingLevelWriter)(nil)
 
 type countingLevelWriter struct {
 	counts     map[LogLevel]int
@@ -1790,8 +1796,6 @@ func (w *countingLevelWriter) WriteLevel(level LogLevel, p []byte) (int, error) 
 	w.counts[level]++
 	return len(p), nil
 }
-
-var _ LevelWriter = levelDiscardWriter{}
 
 type levelDiscardWriter struct{}
 
