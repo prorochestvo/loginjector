@@ -24,6 +24,9 @@ import (
 	"github.com/prorochestvo/loginjector/levels"
 )
 
+// ErrClosed is returned by Flush after shutdown has started.
+var ErrClosed = errors.New("axiom: handler is closed")
+
 // Handler asynchronously batches events for delivery to Axiom. The zero value
 // is unusable; construct a Handler with NewHandler.
 type Handler struct {
@@ -348,9 +351,6 @@ const (
 	maxMessageLen        = 512 << 10
 	userAgent            = "loginjector-axiom"
 )
-
-// ErrClosed is returned by Flush after shutdown has started.
-var ErrClosed = errors.New("axiom: handler is closed")
 
 var stringJSONPool = sync.Pool{New: func() any {
 	return newStringJSONBuffer()

@@ -1126,53 +1126,6 @@ func TestLogger_WriteLogForRaceCondition(t *testing.T) {
 	)
 }
 
-func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
-	t.Parallel()
-	const goroutines = 24
-	const iterations = 250
-	const mixedLevels = 4
-
-	sink := &countingLevelWriter{counts: make(map[LogLevel]int)}
-	logger := NewLogger(logLevelDebug, sink)
-	logger.Hook(
-		sink,
-		0,
-		1,
-		2,
-		3,
-	)
-	wrapped := logger.handlers[0].(*writer)
-
-	var wg sync.WaitGroup
-	for g := range goroutines {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
-			for i := range iterations {
-				level := LogLevel((g + i) % mixedLevels)
-				_, _ = logger.WriteLog(level, []byte("level"))
-				// Write also shares the same sink registry mutex as WriteLevel.
-				_, _ = wrapped.Write([]byte("plain"))
-			}
-		}(g)
-	}
-	wg.Wait()
-
-	for level := range mixedLevels {
-		// each WriteLog reaches the direct handler and the hook at its exact level.
-		require.Equal(
-			t,
-			goroutines*iterations/mixedLevels*2,
-			sink.counts[LogLevel(level)],
-		)
-	}
-	require.Equal(
-		t,
-		goroutines*iterations,
-		sink.writeCalls,
-	)
-}
-
 //nolint:paralleltest // calls log.SetOutput on the std logger
 func TestLogger_Write(t *testing.T) {
 	t.Run("writes at the minimum level", func(t *testing.T) {

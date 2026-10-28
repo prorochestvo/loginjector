@@ -15,38 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func withClock(now func() time.Time, wait func(context.Context, time.Duration) bool) Option {
-	return func(cfg *config) error {
-		if now == nil || wait == nil {
-			return errors.New("clock functions must not be nil")
-		}
-		cfg.now = now
-		cfg.wait = wait
-		return nil
-	}
-}
-
-func withBaseURL(baseURL string) Option {
-	return func(cfg *config) error {
-		parsed, err := url.Parse(baseURL)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" {
-			return errors.New("base URL must contain only a scheme and host")
-		}
-		cfg.baseURL = strings.TrimSuffix(baseURL, "/")
-		return nil
-	}
-}
-
-func withErrorOutput(output io.Writer) Option {
-	return func(cfg *config) error {
-		if output == nil {
-			return errors.New("error output must not be nil")
-		}
-		cfg.errorOutput = output
-		return nil
-	}
-}
-
 func TestWithDomain(t *testing.T) {
 	t.Parallel()
 	t.Run("bare host accepted", func(t *testing.T) {
@@ -515,4 +483,36 @@ func TestWithErrorHandler(t *testing.T) {
 		)
 		require.ErrorContains(t, err, "must not be nil")
 	})
+}
+
+func withClock(now func() time.Time, wait func(context.Context, time.Duration) bool) Option {
+	return func(cfg *config) error {
+		if now == nil || wait == nil {
+			return errors.New("clock functions must not be nil")
+		}
+		cfg.now = now
+		cfg.wait = wait
+		return nil
+	}
+}
+
+func withBaseURL(baseURL string) Option {
+	return func(cfg *config) error {
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != "" {
+			return errors.New("base URL must contain only a scheme and host")
+		}
+		cfg.baseURL = strings.TrimSuffix(baseURL, "/")
+		return nil
+	}
+}
+
+func withErrorOutput(output io.Writer) Option {
+	return func(cfg *config) error {
+		if output == nil {
+			return errors.New("error output must not be nil")
+		}
+		cfg.errorOutput = output
+		return nil
+	}
 }
