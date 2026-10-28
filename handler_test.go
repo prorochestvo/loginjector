@@ -1466,6 +1466,7 @@ func TestWithMinLevel(t *testing.T) {
 		)
 	})
 }
+
 func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
 	t.Parallel()
 	const goroutines = 24

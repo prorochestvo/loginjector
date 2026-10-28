@@ -186,7 +186,6 @@ func TestHandler_Write(t *testing.T) {
 				)+`}`,
 			)
 		}))
-		t.Cleanup(server.Close)
 		fixed := time.Date(
 			2026,
 			10,
@@ -273,7 +272,6 @@ func TestHandler_Write(t *testing.T) {
 				)+`,"failed":0}`,
 			)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -322,7 +320,6 @@ func TestHandler_Write(t *testing.T) {
 				)+`,"failed":0}`,
 			)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -372,7 +369,6 @@ func TestHandler_Write(t *testing.T) {
 				)+`}`,
 			)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -417,7 +413,6 @@ func TestHandler_Write(t *testing.T) {
 					)+`}`,
 				)
 			}))
-			t.Cleanup(server.Close)
 			fixed := time.Date(
 				2026,
 				10,
@@ -500,7 +495,6 @@ func TestHandler_Write(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -548,7 +542,6 @@ func TestHandler_Write(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -598,7 +591,6 @@ func TestHandler_Write(t *testing.T) {
 			got <- events[0]["message"].(string)
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -628,7 +620,6 @@ func TestHandler_Write(t *testing.T) {
 			eventCount.Store(int64(len(events)))
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -657,7 +648,6 @@ func TestHandler_Write(t *testing.T) {
 			got <- struct{}{}
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -693,7 +683,6 @@ func TestHandler_WriteForRaceCondition(t *testing.T) {
 			)+`}`,
 		)
 	}))
-	t.Cleanup(server.Close)
 	h := testHandler(
 		t,
 		server,
@@ -725,9 +714,7 @@ func TestHandler_WriteForRaceCondition(t *testing.T) {
 	stats := h.Stats()
 	require.Equal(
 		t,
-		uint64(
-			workers*writes,
-		),
+		uint64(workers*writes),
 		stats.Sent+stats.Dropped+stats.Failed,
 	)
 }
@@ -810,7 +797,6 @@ func TestHandler_Flush(t *testing.T) {
 				)+`}`,
 			)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -854,7 +840,6 @@ func TestHandler_Flush(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		defer close(release)
 		h := testHandler(
 			t,
@@ -878,7 +863,6 @@ func TestHandler_Flush(t *testing.T) {
 	t.Run("flush idle", func(t *testing.T) {
 		t.Parallel()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
-		t.Cleanup(server.Close)
 		h := testHandler(t, server)
 		ctx, cancel := context.WithTimeout(
 			context.Background(),
@@ -912,7 +896,6 @@ func TestHandler_Flush(t *testing.T) {
 				)+`,"failed":0}`,
 			)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -941,7 +924,6 @@ func TestHandler_Flush(t *testing.T) {
 		require.Zero(t, stats.Failed)
 		require.Zero(t, stats.Dropped)
 	})
-
 }
 
 func TestHandler_Shutdown(t *testing.T) {
@@ -950,7 +932,6 @@ func TestHandler_Shutdown(t *testing.T) {
 		t.Parallel()
 		for range 64 {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
-			t.Cleanup(server.Close)
 			h := testHandler(t, server)
 			h.mu.Lock()
 			h.closed = true
@@ -981,7 +962,6 @@ func TestHandler_Shutdown(t *testing.T) {
 			w.Header().Set("Retry-After", "30")
 			responseJSON(w, 429, "later")
 		}))
-		t.Cleanup(server.Close)
 		waiting := make(chan struct{})
 		h := testHandler(
 			t,
@@ -1015,7 +995,6 @@ func TestHandler_Shutdown(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		var releaseOnce sync.Once
 		defer releaseOnce.Do(func() { close(release) })
 		h := testHandler(
@@ -1058,7 +1037,6 @@ func TestHandler_Shutdown(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		var releaseOnce sync.Once
 		defer releaseOnce.Do(func() { close(release) })
 		h := testHandler(
@@ -1116,7 +1094,6 @@ func TestHandler_Shutdown(t *testing.T) {
 		var reportsMu sync.Mutex
 		var reports []string
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "bad") }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -1155,15 +1132,14 @@ func TestHandler_Shutdown(t *testing.T) {
 	})
 }
 
-// not parallel: noGoroutineLeak reads the process-wide goroutine count
+// not parallel: the no goroutine leak subtest reads the process-wide goroutine count
 //
-//nolint:paralleltest,tparallel // noGoroutineLeak reads the process-wide goroutine count
+//nolint:paralleltest,tparallel // the no goroutine leak subtest reads the process-wide goroutine count
 func TestHandler_Close(t *testing.T) {
 	t.Run("close idempotent", func(t *testing.T) {
 		t.Parallel()
 		var count atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { count.Add(1); responseJSON(w, 200, `{"ingested":1}`) }))
-		t.Cleanup(server.Close)
 		h := testHandler(t, server)
 		_, err := h.Write([]byte("queued"))
 		require.NoError(t, err)
@@ -1195,7 +1171,6 @@ func TestHandler_Close(t *testing.T) {
 	t.Run("no goroutine leak", func(t *testing.T) {
 		before := runtime.NumGoroutine()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -1220,7 +1195,6 @@ func TestHandler_Close(t *testing.T) {
 			before,
 		)
 	})
-
 }
 
 func TestHandler_Format(t *testing.T) {

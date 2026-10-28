@@ -28,7 +28,6 @@ func TestHandler_deliver(t *testing.T) {
 		t.Parallel()
 		var attempts atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { attempts.Add(1); responseJSON(w, 503, "down") }))
-		t.Cleanup(server.Close)
 		var waited atomic.Bool
 		h := testHandler(
 			t,
@@ -56,7 +55,6 @@ func TestHandler_deliver(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			responseJSON(w, 200, `{"ingested":0,"failed":1,"failures":[{"error":"bad row"}]}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -89,7 +87,6 @@ func TestHandler_deliver(t *testing.T) {
 				http.StatusTemporaryRedirect,
 			)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -133,7 +130,6 @@ func TestHandler_deliver(t *testing.T) {
 			}
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -176,7 +172,6 @@ func TestHandler_deliver(t *testing.T) {
 			}
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -216,7 +211,6 @@ func TestHandler_deliver(t *testing.T) {
 			}
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -249,7 +243,6 @@ func TestHandler_deliver(t *testing.T) {
 			}
 			responseJSON(w, 400, "invalid")
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -292,7 +285,6 @@ func TestHandler_deliver(t *testing.T) {
 				responseJSON(w, 200, `{"ingested":1}`)
 			}
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -322,7 +314,6 @@ func TestHandler_deliver(t *testing.T) {
 			t.Helper()
 			var reported atomic.Int64
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, body) }))
-			t.Cleanup(server.Close)
 			h := testHandler(
 				t,
 				server,
@@ -379,6 +370,35 @@ func TestHandler_deliver(t *testing.T) {
 			)
 		})
 	})
+	t.Run("response error does not split a rune", func(t *testing.T) {
+		t.Parallel()
+		body := strings.Repeat("a", errorBodyBytes-2) + "界" + strings.Repeat("b", 20)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			responseJSON(w, http.StatusBadRequest, body)
+		}))
+		reported := make(chan string, 1)
+		h := testHandler(
+			t,
+			server,
+			WithBatchSize(1),
+			WithMaxRetries(0),
+			WithErrorHandler(func(err error) { reported <- err.Error() }),
+		)
+		_, err := h.Write([]byte("x"))
+		require.NoError(t, err)
+		flushHandler(t, h)
+		select {
+		case text := <-reported:
+			require.True(
+				t,
+				utf8.ValidString(text),
+			)
+		case <-time.After(
+			5 * time.Second,
+		):
+			t.Fatal("error was not reported")
+		}
+	})
 	t.Run("failure reason capped", func(t *testing.T) {
 		t.Parallel()
 		t.Run("does not split a rune", func(t *testing.T) {
@@ -392,7 +412,6 @@ func TestHandler_deliver(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				responseJSON(w, http.StatusOK, string(body))
 			}))
-			t.Cleanup(server.Close)
 			reported := make(chan string, 1)
 			h := testHandler(
 				t,
@@ -424,7 +443,6 @@ func TestHandler_deliver(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			responseJSON(w, 200, string(body))
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -511,7 +529,6 @@ func TestHandler_deliver(t *testing.T) {
 		var errorsMu sync.Mutex
 		var messages []string
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "xaat-secret leaked?") }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -553,7 +570,6 @@ func TestHandler_reportWith(t *testing.T) {
 		)
 		var clockMu sync.Mutex
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { attempts.Add(1); responseJSON(w, 400, "bad") }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -594,7 +610,6 @@ func TestHandler_reportWith(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests.Add(1); responseJSON(w, 400, "bad") }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -621,7 +636,6 @@ func TestHandler_reportWith(t *testing.T) {
 			requests.Add(1)
 			responseJSON(w, 400, "bad")
 		}))
-		t.Cleanup(server.Close)
 		output := &lockedTestBuffer{}
 		h := testHandler(
 			t,
@@ -736,7 +750,6 @@ func TestHandler_reportWith(t *testing.T) {
 		t.Parallel()
 		reported := make(chan string, 1)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "dropped request") }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -788,7 +801,6 @@ func TestHandler_reportWith(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -885,7 +897,6 @@ func TestHandler_reportWith(t *testing.T) {
 		)
 		reports := make(chan string, 2)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
-		t.Cleanup(server.Close)
 		var errorCalls atomic.Int64
 		h := testHandler(
 			t,
@@ -936,7 +947,6 @@ func TestHandler_reportWith(t *testing.T) {
 			<-release
 			responseJSON(w, 200, `{"ingested":1}`)
 		}))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
@@ -999,7 +1009,6 @@ func TestHandler_reportWith(t *testing.T) {
 			time.UTC,
 		)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "bad") }))
-		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
