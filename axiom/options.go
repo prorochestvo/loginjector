@@ -1,6 +1,7 @@
 package axiom
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,6 +182,19 @@ type config struct {
 	maxRetries    int
 	compression   bool
 	errorHandler  func(error)
+	now           func() time.Time
+	wait          func(context.Context, time.Duration) bool
+}
+
+func withClock(now func() time.Time, wait func(context.Context, time.Duration) bool) Option {
+	return func(cfg *config) error {
+		if now == nil || wait == nil {
+			return errors.New("clock functions must not be nil")
+		}
+		cfg.now = now
+		cfg.wait = wait
+		return nil
+	}
 }
 
 func encodeFields(fields map[string]any) ([]byte, error) {

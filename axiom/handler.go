@@ -2,6 +2,7 @@ package axiom
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -17,13 +20,46 @@ import (
 	"github.com/prorochestvo/loginjector/levels"
 )
 
-// Handler encodes events for delivery to Axiom.
-type Handler struct {
-	cfg config
+// ErrClosed is returned by Flush after shutdown has started.
+var ErrClosed = errors.New("axiom: handler is closed")
+
+// Stats reports event counts, not batch counts.
+type Stats struct {
+	Sent    uint64
+	Dropped uint64
+	Failed  uint64
 }
 
-// NewHandler validates the token, dataset, and options and constructs a Handler.
-// It does not start a goroutine or open a connection.
+type queuedEvent struct {
+	line []byte
+	cost int64
+}
+
+// Handler asynchronously batches events for delivery to Axiom.
+type Handler struct {
+	cfg          config
+	mu           sync.RWMutex
+	closed       bool
+	queue        chan queuedEvent
+	wake         chan struct{}
+	done         chan struct{}
+	shutdownOnce sync.Once
+	shutdownErr  error
+	cancel       context.CancelFunc
+	inFlight     atomic.Int64
+	admitted     atomic.Uint64
+	completed    atomic.Uint64
+	progress     chan struct{}
+	sent         atomic.Uint64
+	dropped      atomic.Uint64
+	failed       atomic.Uint64
+	errorMu      sync.Mutex
+	lastError    time.Time
+	suppressed   uint64
+	dropReported uint64
+}
+
+// NewHandler validates the token, dataset, and options and starts a delivery worker.
 func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 	if token == "" {
 		return nil, errors.New("axiom: token must not be empty")
@@ -58,6 +94,8 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 		maxRetries:    3,
 		compression:   true,
 		errorHandler:  defaultErrorHandler,
+		now:           time.Now,
+		wait:          waitRetry,
 	}
 	for i, opt := range opts {
 		if opt == nil {
@@ -77,7 +115,111 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 		return nil, errors.New("axiom: maximum queue bytes must be at least maximum batch bytes")
 	}
 	cfg.ingestURL = strings.TrimSuffix(cfg.baseURL, "/") + "/v1/ingest/" + url.PathEscape(dataset)
-	return &Handler{cfg: cfg}, nil
+	workerCtx, cancel := context.WithCancel(context.Background())
+	h := &Handler{cfg: cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}, 1), cancel: cancel}
+	go h.run(workerCtx)
+	return h, nil
+}
+
+// Write queues an unlevelled log event.
+func (h *Handler) Write(p []byte) (int, error) { return h.admit(0, false, p) }
+
+// WriteLevel queues a log event with its severity.
+func (h *Handler) WriteLevel(level loginjector.LogLevel, p []byte) (int, error) {
+	return h.admit(level, true, p)
+}
+
+// Flush sends events admitted before the call and waits for their completion.
+func (h *Handler) Flush(ctx context.Context) error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return ErrClosed
+	}
+	target := h.admitted.Load()
+	h.mu.Unlock()
+	select {
+	case h.wake <- struct{}{}:
+	default:
+	}
+	for h.completed.Load() < target {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-h.progress:
+		case <-h.done:
+			if h.completed.Load() < target {
+				return ErrClosed
+			}
+		}
+	}
+	return nil
+}
+
+// Shutdown stops admission, drains queued events, and waits for the worker.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	h.shutdownOnce.Do(func() {
+		h.mu.Lock()
+		h.closed = true
+		h.mu.Unlock()
+		select {
+		case h.wake <- struct{}{}:
+		default:
+		}
+		select {
+		case <-h.done:
+		case <-ctx.Done():
+			h.cancel()
+			<-h.done
+			h.shutdownErr = ctx.Err()
+		}
+		if h.cfg.ownsClient {
+			h.cfg.httpClient.CloseIdleConnections()
+		}
+	})
+	return h.shutdownErr
+}
+
+// Close shuts down the handler with a five second deadline.
+func (h *Handler) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return h.Shutdown(ctx)
+}
+
+// Stats returns the current event counters.
+func (h *Handler) Stats() Stats {
+	return Stats{Sent: h.sent.Load(), Dropped: h.dropped.Load(), Failed: h.failed.Load()}
+}
+
+func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (int, error) {
+	msg := newEvent(h.cfg.now(), level, hasLevel, p)
+	encoded, err := h.appendEvent(nil, msg)
+	if err != nil {
+		return 0, err
+	}
+	cost := int64(len(encoded))
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.closed || h.inFlight.Add(cost) > int64(h.cfg.maxQueueBytes) {
+		if !h.closed {
+			h.inFlight.Add(-cost)
+		}
+		h.dropped.Add(1)
+		return len(p), nil
+	}
+	select {
+	case h.queue <- queuedEvent{line: encoded, cost: cost}:
+		h.admitted.Add(1)
+		select {
+		case h.wake <- struct{}{}:
+		default:
+		}
+	default:
+		h.inFlight.Add(-cost)
+		h.dropped.Add(1)
+	}
+	return len(p), nil
 }
 
 // appendEvent appends one NDJSON event to dst.
