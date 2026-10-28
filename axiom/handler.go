@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -143,6 +144,15 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 	go h.run(workerCtx)
 	return h, nil
 }
+
+// String returns a safe description of the handler without credentials.
+func (h *Handler) String() string { return "Axiom Handler" }
+
+// GoString returns a safe description of the handler without credentials.
+func (h *Handler) GoString() string { return h.String() }
+
+// Format keeps every fmt verb from exposing private configuration fields.
+func (h *Handler) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, h.String()) }
 
 // Write queues an unlevelled log event.
 func (h *Handler) Write(p []byte) (int, error) { return h.admit(0, false, p) }
@@ -327,12 +337,21 @@ func newEvent(now time.Time, level loginjector.LogLevel, hasLevel bool, p []byte
 	// copy of exactly the kept bytes and never pins a larger backing array.
 	trimmed := bytes.TrimRight(p, "\r\n")
 	truncated := false
-	if len(trimmed) > maxMessageLen {
-		end := maxMessageLen
-		for back := 0; back < utf8.UTFMax-1 && end > 0 && !utf8.RuneStart(trimmed[end]); back++ {
-			end--
+	normalized, sourceEnd := 0, 0
+	for sourceEnd < len(trimmed) {
+		_, size := utf8.DecodeRune(trimmed[sourceEnd:])
+		cost := size
+		if size == 1 && trimmed[sourceEnd] >= utf8.RuneSelf {
+			cost = 3
 		}
-		trimmed = trimmed[:end]
+		if normalized+cost > maxMessageLen {
+			break
+		}
+		normalized += cost
+		sourceEnd += size
+	}
+	if sourceEnd < len(trimmed) {
+		trimmed = trimmed[:sourceEnd]
 		truncated = true
 	}
 	return event{

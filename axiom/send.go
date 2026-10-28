@@ -59,19 +59,19 @@ func (h *Handler) run(ctx context.Context) {
 		batch = batch[:0]
 		encoded.Reset()
 	}
+	add := func(item queuedEvent) {
+		if len(batch) > 0 && (len(batch) >= h.cfg.batchSize || encoded.Len()+int(item.cost) > h.cfg.maxBatchBytes) {
+			flush()
+		}
+		encoded.Write(item.line)
+		batch = append(batch, item)
+		if len(batch) >= h.cfg.batchSize || encoded.Len() >= h.cfg.maxBatchBytes {
+			flush()
+		}
+	}
 	for {
 		select {
 		case item := <-h.queue:
-			add := func(item queuedEvent) {
-				if len(batch) > 0 && (len(batch) >= h.cfg.batchSize || encoded.Len()+int(item.cost) > h.cfg.maxBatchBytes) {
-					flush()
-				}
-				encoded.Write(item.line)
-				batch = append(batch, item)
-				if len(batch) >= h.cfg.batchSize || encoded.Len() >= h.cfg.maxBatchBytes {
-					flush()
-				}
-			}
 			add(item)
 		case <-ticker.C:
 			flush()
@@ -80,14 +80,7 @@ func (h *Handler) run(ctx context.Context) {
 			for {
 				select {
 				case item := <-h.queue:
-					if len(batch) > 0 && (len(batch) >= h.cfg.batchSize || encoded.Len()+int(item.cost) > h.cfg.maxBatchBytes) {
-						flush()
-					}
-					encoded.Write(item.line)
-					batch = append(batch, item)
-					if len(batch) >= h.cfg.batchSize || encoded.Len() >= h.cfg.maxBatchBytes {
-						flush()
-					}
+					add(item)
 				default:
 					goto drained
 				}
@@ -123,17 +116,6 @@ func (h *Handler) run(ctx context.Context) {
 			}
 		}
 	}
-}
-
-func (h *Handler) encodeBatch(batch []queuedEvent, dst *bytes.Buffer) ([]byte, error) {
-	dst.Reset()
-	for _, item := range batch {
-		dst.Write(item.line)
-	}
-	if !h.cfg.compression {
-		return append([]byte(nil), dst.Bytes()...), nil
-	}
-	return h.compressPayload(dst.Bytes())
 }
 
 func (h *Handler) compressPayload(payload []byte) ([]byte, error) {
@@ -175,7 +157,10 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			break
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		_, drainErr := io.Copy(io.Discard, resp.Body)
+		_, drainErr := io.CopyN(io.Discard, resp.Body, maxResponseBytes)
+		if errors.Is(drainErr, io.EOF) {
+			drainErr = nil
+		}
 		closeErr := resp.Body.Close()
 		bodyErr := errors.Join(readErr, drainErr, closeErr)
 		if bodyErr != nil {
@@ -224,7 +209,7 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			if result.Failed > 0 {
 				reason := "Axiom reported failed events"
 				if len(result.Failures) > 0 && result.Failures[0].Error != "" {
-					reason = result.Failures[0].Error
+					reason = strings.ReplaceAll(result.Failures[0].Error, h.cfg.token, "[redacted]")
 					if len(reason) > errorBodyBytes {
 						reason = reason[:errorBodyBytes]
 					}
@@ -242,7 +227,7 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			h.complete(uint64(count))
 			return
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-			finalErr = responseError(resp.StatusCode, body)
+			finalErr = responseError(resp.StatusCode, body, h.cfg.token)
 			if attempt < h.cfg.maxRetries {
 				delay := retryBackoff(attempt)
 				if d, ok := parseRetryAfter(resp.Header.Get("Retry-After"), h.cfg.now()); ok {
@@ -254,7 +239,7 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			}
 		default:
 			h.failed.Add(uint64(count))
-			h.report(responseError(resp.StatusCode, body))
+			h.report(responseError(resp.StatusCode, body, h.cfg.token))
 			h.complete(uint64(count))
 			return
 		}
@@ -282,26 +267,46 @@ func (h *Handler) release(batch []queuedEvent) {
 }
 
 func (h *Handler) report(err error) bool {
-	if err == nil {
+	dropDelta := h.pendingDrops()
+	return h.reportWith(err, dropDelta)
+}
+
+func (h *Handler) pendingDrops() uint64 {
+	h.errorMu.Lock()
+	defer h.errorMu.Unlock()
+	return h.dropped.Load() - h.dropReported
+}
+
+func (h *Handler) reportWith(err error, dropDelta uint64) bool {
+	if err == nil && dropDelta == 0 {
 		return false
 	}
 	now := h.cfg.now()
 	h.errorMu.Lock()
 	if !h.lastError.IsZero() && now.Sub(h.lastError) < errorInterval {
-		h.suppressed++
+		if err != nil {
+			h.suppressed++
+		}
 		h.errorMu.Unlock()
 		return false
 	}
 	suppressed := h.suppressed
 	h.suppressed = 0
-	dropDelta := h.dropped.Load() - h.dropReported
 	h.lastError = now
 	h.errorMu.Unlock()
 	if suppressed > 0 {
-		err = fmt.Errorf("%w (suppressed %d additional errors)", err, suppressed)
+		if err == nil {
+			err = fmt.Errorf("axiom: suppressed %d additional errors", suppressed)
+		} else {
+			err = fmt.Errorf("%w (suppressed %d additional errors)", err, suppressed)
+		}
 	}
-	if dropDelta > 0 && !strings.Contains(err.Error(), "dropped ") {
-		err = fmt.Errorf("%w (axiom: dropped %d events)", err, dropDelta)
+	if dropDelta > 0 {
+		if err == nil {
+			err = fmt.Errorf("axiom: dropped %d events", dropDelta)
+		} else {
+			err = fmt.Errorf("%w (axiom: dropped %d events)", err, dropDelta)
+		}
 	}
 	err = fmt.Errorf("%s", strings.ReplaceAll(err.Error(), h.cfg.token, "[redacted]"))
 	called := false
@@ -327,12 +332,37 @@ func (h *Handler) reportSuppressed() {
 	suppressed := h.suppressed
 	h.suppressed = 0
 	h.errorMu.Unlock()
-	if suppressed == 0 {
+	dropDelta := h.pendingDrops()
+	if suppressed == 0 && dropDelta == 0 {
 		return
 	}
-	err := fmt.Errorf("axiom: suppressed %d additional errors", suppressed)
+	var err error
+	if suppressed > 0 {
+		err = fmt.Errorf("axiom: suppressed %d additional errors", suppressed)
+	}
+	if dropDelta > 0 {
+		if err == nil {
+			err = fmt.Errorf("axiom: dropped %d events", dropDelta)
+		} else {
+			err = fmt.Errorf("%w (axiom: dropped %d events)", err, dropDelta)
+		}
+	}
 	err = fmt.Errorf("%s", strings.ReplaceAll(err.Error(), h.cfg.token, "[redacted]"))
-	func() { defer func() { _ = recover() }(); h.cfg.errorHandler(err) }()
+	called := false
+	func() {
+		defer func() {
+			if v := recover(); v != nil {
+				_, _ = fmt.Fprintf(errorOutput, "axiom: error handler panicked: %v\n", v)
+			}
+		}()
+		h.cfg.errorHandler(err)
+		called = true
+	}()
+	if called && dropDelta > 0 {
+		h.errorMu.Lock()
+		h.dropReported += dropDelta
+		h.errorMu.Unlock()
+	}
 }
 
 func (h *Handler) reportDrops() {
@@ -341,11 +371,12 @@ func (h *Handler) reportDrops() {
 	delta := dropped - h.dropReported
 	h.errorMu.Unlock()
 	if delta > 0 {
-		h.report(fmt.Errorf("axiom: dropped %d events", delta))
+		h.reportWith(nil, delta)
 	}
 }
 
-func responseError(status int, body []byte) error {
+func responseError(status int, body []byte, token string) error {
+	body = []byte(strings.ReplaceAll(string(body), token, "[redacted]"))
 	if len(body) > errorBodyBytes {
 		body = body[:errorBodyBytes]
 	}
@@ -368,12 +399,14 @@ func retryBackoff(attempt int) time.Duration {
 }
 
 func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
-	if seconds, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && seconds >= 0 {
-		d := time.Duration(seconds) * time.Second
-		if d > 30*time.Second {
-			d = 30 * time.Second
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
 		}
-		return d, true
+		if seconds >= 30 {
+			return 30 * time.Second, true
+		}
+		return time.Duration(seconds) * time.Second, true
 	}
 	if when, err := http.ParseTime(value); err == nil {
 		d := when.Sub(now)
@@ -398,5 +431,3 @@ func waitRetry(ctx context.Context, delay time.Duration) bool {
 		return false
 	}
 }
-
-var _ io.Writer = (*Handler)(nil)

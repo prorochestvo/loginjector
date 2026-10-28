@@ -17,6 +17,7 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, "https://us-east-1.aws.edge.axiom.co/v1/ingest/logs", h.cfg.ingestURL)
 		require.Equal(t, 1000, h.cfg.batchSize)
 		require.Equal(t, 4<<20, h.cfg.maxBatchBytes)
@@ -84,6 +85,7 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs group?west")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, "https://us-east-1.aws.edge.axiom.co/v1/ingest/logs%20group%3Fwest", h.cfg.ingestURL)
 	})
 	t.Run("base URL seam", func(t *testing.T) {
@@ -91,6 +93,7 @@ func TestNewHandler(t *testing.T) {
 		baseURL := "http://127.0.0.1:8080"
 		h, err := NewHandler("xaat-secret", "logs", withBaseURL(baseURL))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, baseURL+"/v1/ingest/logs", h.cfg.ingestURL)
 	})
 }
@@ -101,6 +104,7 @@ func TestWithDomain(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithDomain("eu-central-1.aws.edge.axiom.co"))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.True(t, strings.HasPrefix(h.cfg.ingestURL, "https://eu-central-1.aws.edge.axiom.co/"))
 	})
 	assertBadDomain := func(t *testing.T, domain string) {
@@ -124,6 +128,7 @@ func TestWithFields(t *testing.T) {
 		fields := map[string]any{"service": "before"}
 		h, err := NewHandler("xaat-secret", "logs", WithFields(fields))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		fields["service"] = "after"
 		require.Equal(t, []byte(`"service":"before"`), h.cfg.fields)
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), 0, false, []byte("message")))
@@ -136,12 +141,14 @@ func TestWithFields(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithFields(map[string]any{"first": 1}), WithFields(map[string]any{"second": 2}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, []byte(`"second":2`), h.cfg.fields)
 	})
 	t.Run("nil map", func(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithFields(nil))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Empty(t, h.cfg.fields)
 	})
 	t.Run("reserved keys", func(t *testing.T) {
@@ -187,6 +194,7 @@ func TestWithLevelName(t *testing.T) {
 		fn := func(_ loginjector.LogLevel) string { return "custom" }
 		h, err := NewHandler("xaat-secret", "logs", WithLevelName(fn))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, "custom", h.cfg.levelName(0))
 	})
 	t.Run("nil function rejected", func(t *testing.T) {
@@ -204,12 +212,14 @@ func TestWithBatchSize(t *testing.T) {
 			t.Parallel()
 			h, err := NewHandler("xaat-secret", "logs", WithBatchSize(1))
 			require.NoError(t, err)
+			t.Cleanup(func() { _ = h.Close() })
 			require.Equal(t, 1, h.cfg.batchSize)
 		})
 		t.Run("maximum", func(t *testing.T) {
 			t.Parallel()
 			h, err := NewHandler("xaat-secret", "logs", WithBatchSize(10000))
 			require.NoError(t, err)
+			t.Cleanup(func() { _ = h.Close() })
 			require.Equal(t, 10000, h.cfg.batchSize)
 		})
 	})
@@ -228,6 +238,7 @@ func TestWithMaxBatchBytes(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithMaxBatchBytes(1<<20), WithMaxQueueBytes(1<<20))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, 1<<20, h.cfg.maxBatchBytes)
 	})
 	t.Run("below minimum rejected", func(t *testing.T) {
@@ -243,6 +254,7 @@ func TestWithFlushInterval(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithFlushInterval(2*time.Second))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, 2*time.Second, h.cfg.flushInterval)
 	})
 	t.Run("nonpositive rejected", func(t *testing.T) {
@@ -258,6 +270,7 @@ func TestWithQueueSize(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithQueueSize(17))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, 17, h.cfg.queueSize)
 	})
 	t.Run("nonpositive rejected", func(t *testing.T) {
@@ -283,6 +296,7 @@ func TestWithMaxQueueBytes(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithMaxQueueBytes(8<<20))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Equal(t, 8<<20, h.cfg.maxQueueBytes)
 	})
 	t.Run("nonpositive rejected", func(t *testing.T) {
@@ -299,6 +313,7 @@ func TestWithHTTPClient(t *testing.T) {
 		client := &http.Client{}
 		h, err := NewHandler("xaat-secret", "logs", WithHTTPClient(client))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Same(t, client, h.cfg.httpClient)
 		require.False(t, h.cfg.ownsClient)
 	})
@@ -315,6 +330,7 @@ func TestWithMaxRetries(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithMaxRetries(0))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.Zero(t, h.cfg.maxRetries)
 	})
 	t.Run("negative rejected", func(t *testing.T) {
@@ -330,6 +346,7 @@ func TestWithCompression(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithCompression(false))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.False(t, h.cfg.compression)
 	})
 }
@@ -341,6 +358,7 @@ func TestWithErrorHandler(t *testing.T) {
 		fn := func(error) {}
 		h, err := NewHandler("xaat-secret", "logs", WithErrorHandler(fn))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		require.NotNil(t, h.cfg.errorHandler)
 	})
 	t.Run("nil handler rejected", func(t *testing.T) {

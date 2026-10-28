@@ -22,6 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var _ io.Writer = (*Handler)(nil)
+
 func newTestServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(handler)
@@ -170,32 +172,52 @@ func TestHandler_batchByBytes(t *testing.T) {
 
 func TestHandler_batchByBytesExactBoundary(t *testing.T) {
 	t.Parallel()
-	var batches [][]map[string]any
-	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		events, _, err := requestEvents(r)
-		if err != nil {
-			http.Error(w, "bad", http.StatusBadRequest)
-			return
+	assertBatch := func(t *testing.T, over bool, want int) {
+		t.Helper()
+		var batches [][]map[string]any
+		server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			batches = append(batches, events)
+			responseJSON(w, 200, `{"ingested":`+jsonNumber(len(events))+`}`)
+		}))
+		defer server.Close()
+		fixed := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+		h := testHandler(t, server, WithCompression(false), WithMaxBatchBytes(1<<20), withClock(func() time.Time { return fixed }, func(context.Context, time.Duration) bool { return true }))
+		msgs := []string{strings.Repeat("a", 300<<10), strings.Repeat("b", 300<<10), ""}
+		lineLen := func(message string) int {
+			line, err := h.appendEvent(nil, newEvent(fixed, 0, false, []byte(message)))
+			require.NoError(t, err)
+			return len(line)
 		}
-		batches = append(batches, events)
-		responseJSON(w, 200, `{"ingested":`+jsonNumber(len(events))+`}`)
-	}))
-	defer server.Close()
-	h := testHandler(t, server, WithCompression(false), WithMaxBatchBytes(1<<20))
-	first := newEvent(time.Now(), 0, false, []byte(strings.Repeat("a", (1<<20)-128)))
-	line, err := h.appendEvent(nil, first)
-	require.NoError(t, err)
-	// Derive a message size whose encoded line plus a small second event reaches the cap.
-	second := newEvent(time.Now(), 0, false, []byte("b"))
-	secondLine, err := h.appendEvent(nil, second)
-	require.NoError(t, err)
-	message := strings.Repeat("a", (1<<20)-len(line)+len(first.message)-len(secondLine))
-	_, _ = h.Write([]byte(message))
-	_, _ = h.Write([]byte("b"))
-	flushHandler(t, h)
-	require.Len(t, batches, 1)
-	require.Len(t, batches[0], 2)
-	require.Equal(t, "b", batches[0][1]["message"])
+		target := 1 << 20
+		if over {
+			target++
+		}
+		msgs[2] = strings.Repeat("c", target-lineLen(msgs[0])-lineLen(msgs[1])-lineLen(""))
+		for _, message := range msgs {
+			_, err := h.Write([]byte(message))
+			require.NoError(t, err)
+		}
+		flushHandler(t, h)
+		require.Len(t, batches, want)
+		count := 0
+		for _, batch := range batches {
+			count += len(batch)
+		}
+		require.Equal(t, 3, count)
+	}
+	t.Run("exactly 1 MiB batches together", func(t *testing.T) {
+		t.Parallel()
+		assertBatch(t, false, 1)
+	})
+	t.Run("one byte over splits", func(t *testing.T) {
+		t.Parallel()
+		assertBatch(t, true, 2)
+	})
 }
 
 func TestHandler_concurrentFlushAllReturn(t *testing.T) {
@@ -363,12 +385,77 @@ func TestHandler_failureReasonCapped(t *testing.T) {
 	}
 }
 
+func TestHandler_failureReasonRedactsBeforeCap(t *testing.T) {
+	t.Parallel()
+	token := "xaat-secret-prefix-that-must-not-leak"
+	reason := strings.Repeat("a", errorBodyBytes-12) + token
+	body, err := json.Marshal(map[string]any{"ingested": 0, "failed": 1, "failures": []any{map[string]string{"error": reason}}})
+	require.NoError(t, err)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, string(body)) }))
+	defer server.Close()
+	reported := make(chan string, 1)
+	h, err := NewHandler(token, "logs", withBaseURL(server.URL), WithBatchSize(1), WithFlushInterval(time.Hour), WithErrorHandler(func(err error) { reported <- err.Error() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	_, err = h.Write([]byte("x"))
+	require.NoError(t, err)
+	flushHandler(t, h)
+	got := <-reported
+	require.NotContains(t, got, token[:8])
+}
+
+func TestHandler_responseErrorRedactsBeforeCap(t *testing.T) {
+	t.Parallel()
+	token := "xaat-secret-prefix-that-must-not-leak"
+	reason := strings.Repeat("a", errorBodyBytes-12) + token
+	reported := make(chan string, 1)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		responseJSON(w, http.StatusInternalServerError, reason)
+	}))
+	defer server.Close()
+	h, err := NewHandler(token, "logs", withBaseURL(server.URL), WithMaxRetries(0), WithBatchSize(1), WithFlushInterval(time.Hour), WithErrorHandler(func(err error) { reported <- err.Error() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	_, err = h.Write([]byte("x"))
+	require.NoError(t, err)
+	flushHandler(t, h)
+	got := <-reported
+	require.NotContains(t, got, token[:8])
+}
+
+func TestHandler_droppedRequestTextStillReportsPendingDrops(t *testing.T) {
+	t.Parallel()
+	reported := make(chan string, 1)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "dropped request") }))
+	defer server.Close()
+	h := testHandler(t, server, WithBatchSize(1), WithMaxRetries(0), WithFlushInterval(time.Hour), WithErrorHandler(func(err error) { reported <- err.Error() }))
+	h.dropped.Add(3)
+	_, err := h.Write([]byte("x"))
+	require.NoError(t, err)
+	flushHandler(t, h)
+	got := <-reported
+	require.Contains(t, got, "dropped request")
+	require.Contains(t, got, "axiom: dropped 3 events")
+	h.errorMu.Lock()
+	reportedDrops := h.dropReported
+	h.errorMu.Unlock()
+	require.Equal(t, uint64(3), reportedDrops)
+}
+
 func TestHandler_shutdownAfterWorkerDoneReturnsNil(t *testing.T) {
 	t.Parallel()
 	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
 	defer server.Close()
 	h := testHandler(t, server)
-	require.NoError(t, h.Close())
+	h.mu.Lock()
+	h.closed = true
+	h.mu.Unlock()
+	h.wake <- struct{}{}
+	select {
+	case <-h.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not exit")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	require.NoError(t, h.Shutdown(ctx))
@@ -380,21 +467,50 @@ func TestHandler_dropCountsSurviveRateLimit(t *testing.T) {
 	var clockMu sync.Mutex
 	var reportsMu sync.Mutex
 	var reports []string
-	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	firstDone := make(chan struct{}, 1)
+	var request atomic.Int64
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if request.Add(1) == 1 {
+			responseJSON(w, 400, "initial")
+			firstDone <- struct{}{}
+			return
+		}
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		responseJSON(w, 200, `{"ingested":1}`)
+	}))
 	defer server.Close()
-	h := testHandler(t, server, WithQueueSize(1), WithMaxQueueBytes(1<<20), WithMaxBatchBytes(1<<20), WithFlushInterval(time.Hour), WithErrorHandler(func(err error) {
+	h := testHandler(t, server, WithBatchSize(1), WithQueueSize(1), WithMaxQueueBytes(1<<20), WithMaxBatchBytes(1<<20), WithFlushInterval(time.Hour), WithMaxRetries(0), WithErrorHandler(func(err error) {
 		reportsMu.Lock()
 		reports = append(reports, err.Error())
 		reportsMu.Unlock()
 	}), withClock(func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }, func(context.Context, time.Duration) bool { return true }))
-	// Establish the rate limit, then fill and overflow the bounded queue at t=0.
-	require.True(t, h.report(errors.New("initial report")))
+	_, err := h.Write([]byte("first failure"))
+	require.NoError(t, err)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first request did not finish")
+	}
+	_, err = h.Write([]byte("blocked"))
+	require.NoError(t, err)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not enter blocked request")
+	}
+	// The worker is blocked in request two; fill the queue and create drops at t=0.
+	_, err = h.Write([]byte("queued"))
+	require.NoError(t, err)
 	for range 5 {
 		_, err := h.Write([]byte("drop at zero"))
 		require.NoError(t, err)
 	}
 	require.GreaterOrEqual(t, h.Stats().Dropped, uint64(1))
-	h.reportDrops()
 	clockMu.Lock()
 	now = now.Add(10 * time.Second)
 	clockMu.Unlock()
@@ -402,15 +518,17 @@ func TestHandler_dropCountsSurviveRateLimit(t *testing.T) {
 		_, err := h.Write([]byte("drop at ten"))
 		require.NoError(t, err)
 	}
-	h.reportDrops()
 	clockMu.Lock()
 	now = now.Add(21 * time.Second)
 	clockMu.Unlock()
-	require.True(t, h.report(errors.New("later report")))
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, h.Shutdown(ctx))
 	reportsMu.Lock()
 	defer reportsMu.Unlock()
 	require.Len(t, reports, 2)
-	require.Contains(t, reports[1], fmt.Sprintf("dropped %d events", h.Stats().Dropped))
+	require.Contains(t, reports[len(reports)-1], fmt.Sprintf("dropped %d events", h.Stats().Dropped))
 }
 
 func TestHandler_shutdownReportsSuppressed(t *testing.T) {
@@ -436,11 +554,35 @@ func TestHandler_shutdownReportsSuppressed(t *testing.T) {
 			clockMu.Unlock()
 		}
 	}
+	h.dropped.Add(2)
 	require.NoError(t, h.Close())
 	reportsMu.Lock()
 	defer reportsMu.Unlock()
 	require.Len(t, reports, 2)
 	require.Contains(t, reports[1], "suppressed 1")
+	require.Contains(t, reports[1], "axiom: dropped 2 events")
+}
+
+func TestHandler_dropNoticeNotCountedAsSuppressed(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+	reports := make(chan string, 2)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
+	defer server.Close()
+	h := testHandler(t, server, WithErrorHandler(func(err error) { reports <- err.Error() }), withClock(func() time.Time { return now }, func(context.Context, time.Duration) bool { return true }))
+
+	require.True(t, h.report(errors.New("first error")))
+	require.False(t, h.report(errors.New("suppressed error")))
+	h.dropped.Add(2)
+	h.reportDrops()
+	h.reportSuppressed()
+
+	first := <-reports
+	final := <-reports
+	require.Contains(t, first, "first error")
+	require.Contains(t, final, "suppressed 1")
+	require.NotContains(t, final, "suppressed 2")
+	require.Contains(t, final, "axiom: dropped 2 events")
 }
 
 func TestHandler_batchByInterval(t *testing.T) {
@@ -553,6 +695,27 @@ func TestHandler_retryAfterSeconds(t *testing.T) {
 	first, second := <-bodies, <-bodies
 	require.NotEmpty(t, first)
 	require.Equal(t, first, second)
+}
+
+func TestHandler_retryAfterOverflowClampsBeforeConversion(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int64
+	delays := make(chan time.Duration, 1)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "9223372037")
+			responseJSON(w, 429, "limited")
+			return
+		}
+		responseJSON(w, 200, `{"ingested":1}`)
+	}))
+	defer server.Close()
+	h := testHandler(t, server, WithBatchSize(1), WithMaxRetries(1), withClock(time.Now, func(_ context.Context, d time.Duration) bool { delays <- d; return true }))
+	_, err := h.Write([]byte("retry"))
+	require.NoError(t, err)
+	flushHandler(t, h)
+	require.EqualValues(t, 2, calls.Load())
+	require.Equal(t, 30*time.Second, <-delays)
 }
 
 func TestHandler_5xxRetriesAnd400DoesNot(t *testing.T) {

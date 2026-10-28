@@ -24,31 +24,25 @@ func BenchmarkAppendEvent(b *testing.B) {
 	}
 }
 
-func BenchmarkEncodeBatch(b *testing.B) {
+func BenchmarkCompressPayload(b *testing.B) {
 	h, err := NewHandler("xaat-secret", "logs", withBaseURL("http://127.0.0.1:1"))
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer h.Close()
-
-	msg := []byte(fmt.Sprintf("%0120s", "event message"))
-	ev := newEvent(time.Now(), 4, true, msg)
-	batch := make([]queuedEvent, 1000)
-	var total int64
-	for i := range batch {
-		line, err := h.appendEvent(make([]byte, 0, 256), ev)
+	ev := newEvent(time.Now(), 4, true, []byte(fmt.Sprintf("%0120s", "event message")))
+	var payload bytes.Buffer
+	for range 1000 {
+		line, err := h.appendEvent(nil, ev)
 		if err != nil {
 			b.Fatal(err)
 		}
-		batch[i] = queuedEvent{line: line, cost: int64(len(line))}
-		total += int64(len(line))
+		payload.Write(line)
 	}
-
-	var buf bytes.Buffer
 	b.ReportAllocs()
-	b.SetBytes(total)
+	b.SetBytes(int64(payload.Len()))
 	for range b.N {
-		if _, err := h.encodeBatch(batch, &buf); err != nil {
+		if _, err := h.compressPayload(payload.Bytes()); err != nil {
 			b.Fatal(err)
 		}
 	}

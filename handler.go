@@ -1132,7 +1132,6 @@ func (lw *leveledWriter) WriteLevel(level LogLevel, p []byte) (int, error) {
 func (lw *leveledWriter) MinLevel() LogLevel { return lw.level }
 
 var _ LeveledHandler = (*leveledWriter)(nil)
-var _ LevelWriter = (*leveledWriter)(nil)
 
 // writer is a thread-safe writer.
 type writer struct {

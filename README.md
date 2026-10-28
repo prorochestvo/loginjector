@@ -114,7 +114,7 @@ event counts.
 | Batch size | 1000 events | 1–10000 |
 | Maximum uncompressed batch | 4 MiB | At least 1 MiB |
 | Flush interval | 1 second | Positive duration |
-| Queue | 10000 events / 32 MiB | Positive; byte limit must cover a batch |
+| Queue | 10000 events / 32 MiB | Between 1 and 1048576 events; byte limit must cover a batch |
 | Level name | `levels.Name` | Customizable with `WithLevelName` |
 | HTTP client timeout | 10 seconds | Replaced with `WithHTTPClient` |
 | Retries | 3 after initial attempt | Non-negative |

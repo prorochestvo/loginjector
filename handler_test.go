@@ -20,6 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var _ LevelWriter = (*leveledWriter)(nil)
+
 func TestTelegramHandler(t *testing.T) {
 	t.Parallel()
 	t.Run("delivers to the live API", func(t *testing.T) {

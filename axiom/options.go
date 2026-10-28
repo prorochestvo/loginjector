@@ -93,8 +93,8 @@ func WithFlushInterval(d time.Duration) Option {
 	}
 }
 
-// WithQueueSize sets the maximum queued event count. It must be positive. The
-// default is 10000.
+// WithQueueSize sets the maximum queued event count. It must be between 1 and
+// 1048576. The default is 10000.
 func WithQueueSize(n int) Option {
 	return func(cfg *config) error {
 		if n <= 0 || n > 1<<20 {

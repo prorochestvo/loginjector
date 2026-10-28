@@ -1,7 +1,10 @@
 package axiom
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,9 @@ import (
 	"github.com/prorochestvo/loginjector/levels"
 	"github.com/stretchr/testify/require"
 )
+
+var _ io.Writer = (*Handler)(nil)
+var _ loginjector.LevelWriter = (*Handler)(nil)
 
 func Test_newEvent(t *testing.T) {
 	t.Parallel()
@@ -44,6 +50,21 @@ func Test_newEvent(t *testing.T) {
 		ev := newEvent(time.Now(), 0, false, []byte("short"))
 		require.False(t, ev.truncated)
 	})
+	t.Run("invalid UTF-8 normalized size stays within field limit", func(t *testing.T) {
+		t.Parallel()
+		input := bytes.Repeat([]byte{0xff}, maxMessageLen)
+		ev := newEvent(time.Now(), 0, false, input)
+		h, err := NewHandler("xaat-secret", "logs")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
+		line, err := h.appendEvent(nil, ev)
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(line, &decoded))
+		message := decoded["message"].(string)
+		require.LessOrEqual(t, len(message), maxMessageLen)
+		require.True(t, decoded["message_truncated"].(bool))
+	})
 	t.Run("copies caller bytes", func(t *testing.T) {
 		t.Parallel()
 		input := []byte("before")
@@ -53,12 +74,24 @@ func Test_newEvent(t *testing.T) {
 	})
 }
 
+func TestHandler_formatDoesNotExposeToken(t *testing.T) {
+	t.Parallel()
+	h, err := NewHandler("xaat-super-secret-token", "logs")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		formatted := fmt.Sprintf(verb, h)
+		require.NotContains(t, formatted, "xaat-super-secret-token")
+	}
+}
+
 func TestHandler_appendEvent(t *testing.T) {
 	t.Parallel()
 	t.Run("level present including zero", func(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Date(2026, 10, 22, 1, 2, 3, 4, time.UTC), 0, true, []byte("hello")))
 		require.NoError(t, err)
 		var fields map[string]any
@@ -73,6 +106,7 @@ func TestHandler_appendEvent(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), levels.Warning, false, []byte("plain")))
 		require.NoError(t, err)
 		var fields map[string]any
@@ -84,6 +118,7 @@ func TestHandler_appendEvent(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), levels.Warning, true, []byte("warning")))
 		require.NoError(t, err)
 		var fields map[string]any
@@ -96,6 +131,7 @@ func TestHandler_appendEvent(t *testing.T) {
 			return "severity-" + string(rune('0'+level))
 		}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), 4, true, []byte("x")))
 		require.NoError(t, err)
 		var fields map[string]any
@@ -106,6 +142,7 @@ func TestHandler_appendEvent(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs", WithFields(map[string]any{"service": "api", "enabled": true}))
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), 0, false, []byte("msg")))
 		require.NoError(t, err)
 		var fields map[string]any
@@ -117,6 +154,7 @@ func TestHandler_appendEvent(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), 0, false, []byte{0xff}))
 		require.NoError(t, err)
 		var fields map[string]any
@@ -127,6 +165,7 @@ func TestHandler_appendEvent(t *testing.T) {
 		t.Parallel()
 		h, err := NewHandler("xaat-secret", "logs")
 		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
 		dst, err := h.appendEvent(nil, newEvent(time.Now(), 0, false, []byte(strings.Repeat("x", maxMessageLen+1))))
 		require.NoError(t, err)
 		var fields map[string]any
