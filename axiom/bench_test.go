@@ -12,13 +12,17 @@ func BenchmarkAppendEvent(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer h.Close()
+	b.Cleanup(func() {
+		if err := h.Close(); err != nil {
+			b.Errorf("close handler: %v", err)
+		}
+	})
 
 	msg := []byte(fmt.Sprintf("%0120s", "event message"))
 	ev := newEvent(time.Now(), 4, true, msg)
 	b.ReportAllocs()
 	for range b.N {
-		if _, err := h.appendEvent(make([]byte, 0, 256), ev); err != nil {
+		if _, err := h.appendEvent(nil, ev); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -29,7 +33,11 @@ func BenchmarkCompressPayload(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer h.Close()
+	b.Cleanup(func() {
+		if err := h.Close(); err != nil {
+			b.Errorf("close handler: %v", err)
+		}
+	})
 	ev := newEvent(time.Now(), 4, true, []byte(fmt.Sprintf("%0120s", "event message")))
 	var payload bytes.Buffer
 	for range 1000 {

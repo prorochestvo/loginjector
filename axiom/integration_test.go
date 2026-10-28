@@ -25,6 +25,11 @@ func TestIntegration_smokeIngest(t *testing.T) {
 
 	handler, err := axiom.NewHandler(token, dataset, axiom.WithDomain(domain))
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := handler.Close(); err != nil {
+			t.Errorf("close handler: %v", err)
+		}
+	})
 
 	runID := time.Now().UTC().Format(time.RFC3339Nano)
 	t.Logf("Axiom integration run ID: %s", runID)

@@ -99,7 +99,7 @@ func configure() error {
 ```
 
 Events are newline-delimited JSON. Each has `_time` in UTC and `message`; messages have
-trailing CR/LF removed and are truncated at 512 KiB on a UTF-8 boundary when needed. Events
+trailing CR/LF removed and are truncated at 512 KiB after invalid bytes are replaced with U+FFFD. Events
 written through `WriteLevel` also include `level` and `level_num`. `WithFields` adds static
 fields to every event; its keys cannot be empty, start with `_`, or replace reserved event
 fields.

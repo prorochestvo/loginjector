@@ -170,6 +170,11 @@ func TestWithFields(t *testing.T) {
 		_, err := NewHandler("xaat-secret", "logs", WithFields(map[string]any{"": 1}))
 		require.ErrorContains(t, err, "field name")
 	})
+	t.Run("invalid UTF-8 key", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewHandler("xaat-secret", "logs", WithFields(map[string]any{string([]byte{'b', 0xff}): 1}))
+		require.ErrorContains(t, err, "valid UTF-8")
+	})
 	t.Run("key longer than 200 bytes", func(t *testing.T) {
 		t.Parallel()
 		_, err := NewHandler("xaat-secret", "logs", WithFields(map[string]any{strings.Repeat("k", 201): 1}))

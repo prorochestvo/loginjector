@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	loginjector "github.com/prorochestvo/loginjector"
 )
@@ -209,6 +210,9 @@ func encodeFields(fields map[string]any) ([]byte, error) {
 		"_time": {}, "level": {}, "level_num": {}, "message": {}, "message_truncated": {},
 	}
 	for key := range fields {
+		if !utf8.ValidString(key) {
+			return nil, fmt.Errorf("invalid static field name %q: key must be valid UTF-8", key)
+		}
 		if key == "" || len(key) > 200 || strings.HasPrefix(key, "_") {
 			return nil, fmt.Errorf("invalid static field name %q", key)
 		}

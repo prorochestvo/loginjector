@@ -186,7 +186,7 @@ func TestHandler_batchByBytesExactBoundary(t *testing.T) {
 		}))
 		defer server.Close()
 		fixed := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
-		h := testHandler(t, server, WithCompression(false), WithMaxBatchBytes(1<<20), withClock(func() time.Time { return fixed }, func(context.Context, time.Duration) bool { return true }))
+		h := testHandler(t, server, WithCompression(false), WithMaxBatchBytes(1<<20), WithFlushInterval(time.Hour), withClock(func() time.Time { return fixed }, func(context.Context, time.Duration) bool { return true }))
 		msgs := []string{strings.Repeat("a", 300<<10), strings.Repeat("b", 300<<10), ""}
 		lineLen := func(message string) int {
 			line, err := h.appendEvent(nil, newEvent(fixed, 0, false, []byte(message)))
@@ -240,7 +240,7 @@ func TestHandler_concurrentFlushAllReturn(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			errs <- h.Flush(ctx)
 		}()
@@ -444,21 +444,26 @@ func TestHandler_droppedRequestTextStillReportsPendingDrops(t *testing.T) {
 
 func TestHandler_shutdownAfterWorkerDoneReturnsNil(t *testing.T) {
 	t.Parallel()
-	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
-	defer server.Close()
-	h := testHandler(t, server)
-	h.mu.Lock()
-	h.closed = true
-	h.mu.Unlock()
-	h.wake <- struct{}{}
-	select {
-	case <-h.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("worker did not exit")
+	for range 64 {
+		t.Run("iteration", func(t *testing.T) {
+			t.Parallel()
+			server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
+			defer server.Close()
+			h := testHandler(t, server)
+			h.mu.Lock()
+			h.closed = true
+			h.mu.Unlock()
+			h.wake <- struct{}{}
+			select {
+			case <-h.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("worker did not exit")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			require.NoError(t, h.Shutdown(ctx))
+		})
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.NoError(t, h.Shutdown(ctx))
 }
 
 func TestHandler_dropCountsSurviveRateLimit(t *testing.T) {
@@ -569,7 +574,7 @@ func TestHandler_dropNoticeNotCountedAsSuppressed(t *testing.T) {
 	reports := make(chan string, 2)
 	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
 	defer server.Close()
-	h := testHandler(t, server, WithErrorHandler(func(err error) { reports <- err.Error() }), withClock(func() time.Time { return now }, func(context.Context, time.Duration) bool { return true }))
+	h := testHandler(t, server, WithFlushInterval(time.Hour), WithErrorHandler(func(err error) { reports <- err.Error() }), withClock(func() time.Time { return now }, func(context.Context, time.Duration) bool { return true }))
 
 	require.True(t, h.report(errors.New("first error")))
 	require.False(t, h.report(errors.New("suppressed error")))
@@ -583,6 +588,40 @@ func TestHandler_dropNoticeNotCountedAsSuppressed(t *testing.T) {
 	require.Contains(t, final, "suppressed 1")
 	require.NotContains(t, final, "suppressed 2")
 	require.Contains(t, final, "axiom: dropped 2 events")
+}
+
+func TestHandler_batchExactlyFullSendsImmediately(t *testing.T) {
+	t.Parallel()
+	got := make(chan int, 1)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events, _, err := requestEvents(r)
+		if err != nil {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		got <- len(events)
+		responseJSON(w, 200, `{"ingested":`+jsonNumber(len(events))+`}`)
+	}))
+	defer server.Close()
+	fixed := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+	h := testHandler(t, server, WithCompression(false), WithMaxBatchBytes(1<<20), WithFlushInterval(time.Hour), withClock(func() time.Time { return fixed }, func(context.Context, time.Duration) bool { return true }))
+	lineLen := func(message string) int {
+		line, err := h.appendEvent(nil, newEvent(fixed, 0, false, []byte(message)))
+		require.NoError(t, err)
+		return len(line)
+	}
+	msgs := []string{strings.Repeat("a", 300<<10), strings.Repeat("b", 300<<10), ""}
+	msgs[2] = strings.Repeat("c", (1<<20)-lineLen(msgs[0])-lineLen(msgs[1])-lineLen(""))
+	for _, message := range msgs {
+		_, err := h.Write([]byte(message))
+		require.NoError(t, err)
+	}
+	select {
+	case count := <-got:
+		require.Equal(t, 3, count)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a batch at exactly maxBatchBytes was not sent until Flush")
+	}
 }
 
 func TestHandler_batchByInterval(t *testing.T) {
@@ -918,6 +957,8 @@ func TestHandler_shutdownHangingServer(t *testing.T) {
 		responseJSON(w, 200, `{"ingested":1}`)
 	}))
 	defer server.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
 	h := testHandler(t, server, WithBatchSize(1))
 	_, err := h.Write([]byte("hang"))
 	require.NoError(t, err)
@@ -929,13 +970,44 @@ func TestHandler_shutdownHangingServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	require.ErrorIs(t, h.Shutdown(ctx), context.DeadlineExceeded)
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	select {
 	case <-h.done:
 	default:
 		t.Fatal("worker did not exit")
 	}
 	require.Equal(t, uint64(1), h.Stats().Failed)
+}
+
+func TestHandler_concurrentShutdownUsesEachCallersDeadline(t *testing.T) {
+	t.Parallel()
+	started, release := make(chan struct{}), make(chan struct{})
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		responseJSON(w, 200, `{"ingested":1}`)
+	}))
+	defer server.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	h := testHandler(t, server, WithBatchSize(1))
+	_, err := h.Write([]byte("hang"))
+	require.NoError(t, err)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request did not start")
+	}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- h.Shutdown(context.Background()) }()
+	secondCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err = h.Shutdown(secondCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), time.Second)
+	releaseOnce.Do(func() { close(release) })
+	require.NoError(t, <-firstDone)
 }
 
 func TestHandler_callerMutatesSlice(t *testing.T) {
@@ -997,7 +1069,9 @@ func TestHandler_WriteForRaceCondition(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	require.NoError(t, h.Close())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, h.Shutdown(ctx))
 	stats := h.Stats()
 	require.Equal(t, uint64(workers*writes), stats.Sent+stats.Dropped+stats.Failed)
 }

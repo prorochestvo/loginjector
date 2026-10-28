@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,14 +52,13 @@ type queuedEvent struct {
 
 // Handler asynchronously batches events for delivery to Axiom.
 type Handler struct {
-	cfg          config
+	cfg          *config
 	mu           sync.RWMutex
 	closed       bool
 	queue        chan queuedEvent
 	wake         chan struct{}
 	done         chan struct{}
 	shutdownOnce sync.Once
-	shutdownErr  error
 	cancel       context.CancelFunc
 	inFlight     atomic.Int64
 	admitted     atomic.Uint64
@@ -137,7 +137,7 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 	}
 	cfg.ingestURL = strings.TrimSuffix(cfg.baseURL, "/") + "/v1/ingest/" + url.PathEscape(dataset)
 	workerCtx, cancel := context.WithCancel(context.Background())
-	h := &Handler{cfg: cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}), cancel: cancel}
+	h := &Handler{cfg: &cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}), cancel: cancel}
 	if cfg.compression {
 		h.gzipWriter = gzip.NewWriter(&h.compressBuf)
 	}
@@ -145,14 +145,8 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 	return h, nil
 }
 
-// String returns a safe description of the handler without credentials.
-func (h *Handler) String() string { return "Axiom Handler" }
-
-// GoString returns a safe description of the handler without credentials.
-func (h *Handler) GoString() string { return h.String() }
-
 // Format keeps every fmt verb from exposing private configuration fields.
-func (h *Handler) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, h.String()) }
+func (h *Handler) Format(state fmt.State, _ rune) { _, _ = io.WriteString(state, "Axiom Handler") }
 
 // Write queues an unlevelled log event.
 func (h *Handler) Write(p []byte) (int, error) { return h.admit(0, false, p) }
@@ -205,23 +199,29 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 		case h.wake <- struct{}{}:
 		default:
 		}
-		select {
-		case <-h.done:
-		case <-ctx.Done():
-			select {
-			case <-h.done:
-				h.shutdownErr = nil
-			default:
-				h.cancel()
-				<-h.done
-				h.shutdownErr = ctx.Err()
-			}
-		}
+	})
+	select {
+	case <-h.done:
 		if h.cfg.ownsClient {
 			h.cfg.httpClient.CloseIdleConnections()
 		}
-	})
-	return h.shutdownErr
+		return nil
+	case <-ctx.Done():
+		select {
+		case <-h.done:
+			if h.cfg.ownsClient {
+				h.cfg.httpClient.CloseIdleConnections()
+			}
+			return nil
+		default:
+		}
+		h.cancel()
+		<-h.done
+		if h.cfg.ownsClient {
+			h.cfg.httpClient.CloseIdleConnections()
+		}
+		return ctx.Err()
+	}
 }
 
 // Close shuts down the handler with a five second deadline.
@@ -264,11 +264,7 @@ func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (in
 
 // appendEvent appends one NDJSON event to dst.
 func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
-	if cap(dst)-len(dst) < len(ev.message)+128 {
-		grown := make([]byte, len(dst), len(dst)+len(ev.message)+128)
-		copy(grown, dst)
-		dst = grown
-	}
+	dst = slices.Grow(dst, len(ev.message)+len(h.cfg.fields)+128)
 	dst = append(dst, '{')
 	dst = append(dst, `"_time":`...)
 	dst = append(dst, '"')

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,10 @@ func TestHandler_formatDoesNotExposeToken(t *testing.T) {
 	t.Cleanup(func() { _ = h.Close() })
 	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
 		formatted := fmt.Sprintf(verb, h)
+		require.NotContains(t, formatted, "xaat-super-secret-token")
+	}
+	for _, verb := range []string{"%+v", "%#v"} {
+		formatted := fmt.Sprintf(verb, reflect.ValueOf(h).Elem().Interface())
 		require.NotContains(t, formatted, "xaat-super-secret-token")
 	}
 }
