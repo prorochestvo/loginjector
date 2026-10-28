@@ -211,10 +211,6 @@ func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (in
 	select {
 	case h.queue <- queuedEvent{line: encoded, cost: cost}:
 		h.admitted.Add(1)
-		select {
-		case h.wake <- struct{}{}:
-		default:
-		}
 	default:
 		h.inFlight.Add(-cost)
 		h.dropped.Add(1)

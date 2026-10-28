@@ -110,6 +110,37 @@ func TestHandler_batchByCount(t *testing.T) {
 	require.Equal(t, uint64(3), h.Stats().Sent)
 }
 
+func TestHandler_batchFillsByCountOnly(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int64
+	eventCounts := make(chan int, 3)
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events, _, err := requestEvents(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests.Add(1)
+		eventCounts <- len(events)
+		responseJSON(w, 200, `{"ingested":`+jsonNumber(len(events))+`,"failed":0}`)
+	}))
+	defer server.Close()
+	h := testHandler(t, server, WithBatchSize(3), WithFlushInterval(time.Hour), WithMaxRetries(0))
+	for _, msg := range []string{"one", "two", "three"} {
+		_, err := h.Write([]byte(msg))
+		require.NoError(t, err)
+	}
+	select {
+	case count := <-eventCounts:
+		require.Equal(t, 3, count)
+	case <-time.After(5 * time.Second):
+		t.Fatal("count-triggered batch was not delivered")
+	}
+	require.NoError(t, h.Close())
+	require.EqualValues(t, 1, requests.Load())
+	require.Equal(t, uint64(3), h.Stats().Sent)
+}
+
 func TestHandler_batchByBytes(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int64

@@ -42,9 +42,9 @@ func (h *Handler) run(ctx context.Context) {
 		payload, err := h.encodeBatch(batch, &encoded)
 		if err != nil {
 			h.failed.Add(uint64(len(batch)))
-			h.complete(uint64(len(batch)))
 			h.release(batch)
 			h.report(err)
+			h.complete(uint64(len(batch)))
 			batch = batch[:0]
 			encoded.Reset()
 			return
@@ -163,13 +163,12 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			var result ingestResponse
 			if err := json.Unmarshal(body, &result); err != nil {
 				h.sent.Add(uint64(count))
-				h.complete(uint64(count))
 				h.report(fmt.Errorf("axiom: decode HTTP 200 response: %w", err))
+				h.complete(uint64(count))
 				return
 			}
 			h.sent.Add(uint64(result.Ingested))
 			h.failed.Add(uint64(result.Failed))
-			h.complete(uint64(count))
 			if result.Failed > 0 {
 				reason := "Axiom reported failed events"
 				if len(result.Failures) > 0 && result.Failures[0].Error != "" {
@@ -177,6 +176,7 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 				}
 				h.report(fmt.Errorf("axiom: %d events failed: %s", result.Failed, reason))
 			}
+			h.complete(uint64(count))
 			return
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 			finalErr = responseError(resp.StatusCode, body)
@@ -191,17 +191,17 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 			}
 		default:
 			h.failed.Add(uint64(count))
-			h.complete(uint64(count))
 			h.report(responseError(resp.StatusCode, body))
+			h.complete(uint64(count))
 			return
 		}
 		break
 	}
 	h.failed.Add(uint64(count))
-	h.complete(uint64(count))
 	if finalErr != nil {
 		h.report(finalErr)
 	}
+	h.complete(uint64(count))
 }
 
 func (h *Handler) complete(count uint64) {
