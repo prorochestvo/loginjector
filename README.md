@@ -77,6 +77,7 @@ is `us-east-1.aws.edge.axiom.co`.
 
 ```go
 import (
+	"log"
 	"os"
 
 	"github.com/prorochestvo/loginjector"
@@ -84,7 +85,7 @@ import (
 	"github.com/prorochestvo/loginjector/levels"
 )
 
-func configure() error {
+func main() {
 	ax, err := axiom.NewHandler(
 		axiom.Token(os.Getenv("AXIOM_TOKEN")),
 		"app-logs",
@@ -92,13 +93,18 @@ func configure() error {
 		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}),
 	)
 	if err != nil {
-		return err
+		log.Fatal(err)
 	}
+	// Close flushes the queue; keep the handler open for the life of the program.
 	defer ax.Close()
-	logger := loginjector.NewLogger(levels.Info, loginjector.TimestampedPrintHandler(), ax)
+
+	logger := loginjector.NewLogger(
+		levels.Info,
+		loginjector.TimestampedPrintHandler(),
+		ax,
+	)
 	std := logger.StdLog(levels.Info, "")
 	std.Printf("started")
-	return nil
 }
 ```
 
