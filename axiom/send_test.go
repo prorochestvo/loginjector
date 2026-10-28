@@ -232,6 +232,34 @@ func TestHandler_concurrentFlushAllReturn(t *testing.T) {
 	require.Equal(t, uint64(1010), h.Stats().Sent)
 }
 
+func TestHandler_flushWakeDrainsQueue(t *testing.T) {
+	t.Parallel()
+	var eventCount atomic.Int64
+	server := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events, _, err := requestEvents(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		eventCount.Add(int64(len(events)))
+		responseJSON(w, 200, `{"ingested":`+jsonNumber(len(events))+`,"failed":0}`)
+	}))
+	defer server.Close()
+	h := testHandler(t, server, WithFlushInterval(time.Hour))
+	for i := 1; i <= 1010; i++ {
+		_, err := fmt.Fprintf(h, "event-%04d", i)
+		require.NoError(t, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, h.Flush(ctx))
+	require.EqualValues(t, 1010, eventCount.Load())
+	stats := h.Stats()
+	require.Equal(t, uint64(1010), stats.Sent)
+	require.Zero(t, stats.Failed)
+	require.Zero(t, stats.Dropped)
+}
+
 func TestHandler_200IncompleteAccounting(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
