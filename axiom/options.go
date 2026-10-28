@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +18,8 @@ import (
 
 // Option configures an Axiom Handler.
 type Option func(*config) error
+
+var errorOutput io.Writer = os.Stderr
 
 // WithDomain sets the bare Axiom edge host. The default is
 // "us-east-1.aws.edge.axiom.co".
@@ -94,8 +97,8 @@ func WithFlushInterval(d time.Duration) Option {
 // default is 10000.
 func WithQueueSize(n int) Option {
 	return func(cfg *config) error {
-		if n <= 0 {
-			return fmt.Errorf("queue size must be positive: %d", n)
+		if n <= 0 || n > 1<<20 {
+			return fmt.Errorf("queue size must be between 1 and 1048576: %d", n)
 		}
 		cfg.queueSize = n
 		return nil
@@ -241,7 +244,7 @@ func validDomain(domain string) error {
 
 func defaultErrorHandler(err error) {
 	message := strings.NewReplacer("\r", `\r`, "\n", `\n`).Replace(err.Error())
-	_, _ = fmt.Fprintln(os.Stderr, message)
+	_, _ = fmt.Fprintln(errorOutput, message)
 }
 
 func withBaseURL(baseURL string) Option {

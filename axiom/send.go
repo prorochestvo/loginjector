@@ -2,7 +2,6 @@ package axiom
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +15,7 @@ import (
 )
 
 const (
-	maxResponseBytes = 64 << 10
+	maxResponseBytes = 1 << 20
 	errorBodyBytes   = 1 << 10
 	errorInterval    = 30 * time.Second
 )
@@ -39,7 +38,13 @@ func (h *Handler) run(ctx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
-		payload, err := h.encodeBatch(batch, &encoded)
+		var payload []byte
+		var err error
+		if h.cfg.compression {
+			payload, err = h.compressPayload(encoded.Bytes())
+		} else {
+			payload = append([]byte(nil), encoded.Bytes()...)
+		}
 		if err != nil {
 			h.failed.Add(uint64(len(batch)))
 			h.release(batch)
@@ -57,18 +62,37 @@ func (h *Handler) run(ctx context.Context) {
 	for {
 		select {
 		case item := <-h.queue:
-			if len(batch) > 0 && (len(batch) >= h.cfg.batchSize || encoded.Len()+int(item.cost) > h.cfg.maxBatchBytes) {
-				flush()
+			add := func(item queuedEvent) {
+				if len(batch) > 0 && (len(batch) >= h.cfg.batchSize || encoded.Len()+int(item.cost) > h.cfg.maxBatchBytes) {
+					flush()
+				}
+				encoded.Write(item.line)
+				batch = append(batch, item)
+				if len(batch) >= h.cfg.batchSize || encoded.Len() >= h.cfg.maxBatchBytes {
+					flush()
+				}
 			}
-			encoded.Write(item.line)
-			batch = append(batch, item)
-			if len(batch) >= h.cfg.batchSize || encoded.Len() >= h.cfg.maxBatchBytes {
-				flush()
-			}
+			add(item)
 		case <-ticker.C:
 			flush()
 			h.reportDrops()
 		case <-h.wake:
+			for {
+				select {
+				case item := <-h.queue:
+					if len(batch) > 0 && (len(batch) >= h.cfg.batchSize || encoded.Len()+int(item.cost) > h.cfg.maxBatchBytes) {
+						flush()
+					}
+					encoded.Write(item.line)
+					batch = append(batch, item)
+					if len(batch) >= h.cfg.batchSize || encoded.Len() >= h.cfg.maxBatchBytes {
+						flush()
+					}
+				default:
+					goto drained
+				}
+			}
+		drained:
 			flush()
 		case <-ctx.Done():
 			for {
@@ -106,19 +130,22 @@ func (h *Handler) encodeBatch(batch []queuedEvent, dst *bytes.Buffer) ([]byte, e
 	for _, item := range batch {
 		dst.Write(item.line)
 	}
-	payload := append([]byte(nil), dst.Bytes()...)
 	if !h.cfg.compression {
-		return payload, nil
+		return append([]byte(nil), dst.Bytes()...), nil
 	}
-	var compressed bytes.Buffer
-	zw := gzip.NewWriter(&compressed)
-	if _, err := zw.Write(payload); err != nil {
+	return h.compressPayload(dst.Bytes())
+}
+
+func (h *Handler) compressPayload(payload []byte) ([]byte, error) {
+	h.compressBuf.Reset()
+	h.gzipWriter.Reset(&h.compressBuf)
+	if _, err := h.gzipWriter.Write(payload); err != nil {
 		return nil, fmt.Errorf("axiom: compress batch: %w", err)
 	}
-	if err := zw.Close(); err != nil {
+	if err := h.gzipWriter.Close(); err != nil {
 		return nil, fmt.Errorf("axiom: finish batch compression: %w", err)
 	}
-	return append([]byte(nil), compressed.Bytes()...), nil
+	return append([]byte(nil), h.compressBuf.Bytes()...), nil
 }
 
 func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
@@ -162,19 +189,55 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 		case resp.StatusCode == http.StatusOK:
 			var result ingestResponse
 			if err := json.Unmarshal(body, &result); err != nil {
-				h.sent.Add(uint64(count))
+				h.failed.Add(uint64(count))
 				h.report(fmt.Errorf("axiom: decode HTTP 200 response: %w", err))
 				h.complete(uint64(count))
 				return
 			}
-			h.sent.Add(uint64(result.Ingested))
-			h.failed.Add(uint64(result.Failed))
+			ing := result.Ingested
+			if ing < 0 {
+				ing = 0
+			}
+			if ing > count {
+				ing = count
+			}
+			fl := result.Failed
+			if fl < 0 {
+				fl = 0
+			}
+			if fl > count-ing {
+				fl = count - ing
+			}
+			inconsistent := result.Ingested != ing || result.Failed != fl || ing+fl != count
+			h.sent.Add(uint64(ing))
+			h.failed.Add(uint64(fl))
+			var accountingErr error
+			if remainder := count - ing - fl; inconsistent || remainder > 0 {
+				h.failed.Add(uint64(remainder))
+				if remainder > 0 {
+					accountingErr = fmt.Errorf("axiom: response accounted for %d of %d events", ing+fl, count)
+				} else {
+					accountingErr = fmt.Errorf("axiom: response counts were inconsistent: ingested %d, failed %d for %d events", result.Ingested, result.Failed, count)
+				}
+			}
+			var failedErr error
 			if result.Failed > 0 {
 				reason := "Axiom reported failed events"
 				if len(result.Failures) > 0 && result.Failures[0].Error != "" {
 					reason = result.Failures[0].Error
+					if len(reason) > errorBodyBytes {
+						reason = reason[:errorBodyBytes]
+					}
 				}
-				h.report(fmt.Errorf("axiom: %d events failed: %s", result.Failed, reason))
+				failedErr = fmt.Errorf("axiom: %d events failed: %s", result.Failed, reason)
+			}
+			switch {
+			case failedErr != nil && accountingErr != nil:
+				h.report(fmt.Errorf("%w (%w)", failedErr, accountingErr))
+			case failedErr != nil:
+				h.report(failedErr)
+			case accountingErr != nil:
+				h.report(accountingErr)
 			}
 			h.complete(uint64(count))
 			return
@@ -206,10 +269,10 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 
 func (h *Handler) complete(count uint64) {
 	h.completed.Add(count)
-	select {
-	case h.progress <- struct{}{}:
-	default:
-	}
+	h.progressMu.Lock()
+	close(h.progress)
+	h.progress = make(chan struct{})
+	h.progressMu.Unlock()
 }
 
 func (h *Handler) release(batch []queuedEvent) {
@@ -218,26 +281,45 @@ func (h *Handler) release(batch []queuedEvent) {
 	}
 }
 
-func (h *Handler) report(err error) {
+func (h *Handler) report(err error) bool {
 	if err == nil {
-		return
+		return false
 	}
 	now := h.cfg.now()
 	h.errorMu.Lock()
 	if !h.lastError.IsZero() && now.Sub(h.lastError) < errorInterval {
 		h.suppressed++
 		h.errorMu.Unlock()
-		return
+		return false
 	}
 	suppressed := h.suppressed
 	h.suppressed = 0
+	dropDelta := h.dropped.Load() - h.dropReported
 	h.lastError = now
 	h.errorMu.Unlock()
 	if suppressed > 0 {
 		err = fmt.Errorf("%w (suppressed %d additional errors)", err, suppressed)
 	}
+	if dropDelta > 0 && !strings.Contains(err.Error(), "dropped ") {
+		err = fmt.Errorf("%w (axiom: dropped %d events)", err, dropDelta)
+	}
 	err = fmt.Errorf("%s", strings.ReplaceAll(err.Error(), h.cfg.token, "[redacted]"))
-	func() { defer func() { _ = recover() }(); h.cfg.errorHandler(err) }()
+	called := false
+	func() {
+		defer func() {
+			if v := recover(); v != nil {
+				_, _ = fmt.Fprintf(errorOutput, "axiom: error handler panicked: %v\n", v)
+			}
+		}()
+		h.cfg.errorHandler(err)
+		called = true
+	}()
+	if called && dropDelta > 0 {
+		h.errorMu.Lock()
+		h.dropReported += dropDelta
+		h.errorMu.Unlock()
+	}
+	return called
 }
 
 func (h *Handler) reportSuppressed() {
@@ -257,9 +339,6 @@ func (h *Handler) reportDrops() {
 	dropped := h.dropped.Load()
 	h.errorMu.Lock()
 	delta := dropped - h.dropReported
-	if delta > 0 {
-		h.dropReported = dropped
-	}
 	h.errorMu.Unlock()
 	if delta > 0 {
 		h.report(fmt.Errorf("axiom: dropped %d events", delta))

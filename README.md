@@ -104,6 +104,10 @@ written through `WriteLevel` also include `level` and `level_num`. `WithFields` 
 fields to every event; its keys cannot be empty, start with `_`, or replace reserved event
 fields.
 
+The handler batches up to 1000 events or 4 MiB of uncompressed NDJSON, flushes every second,
+and retries transient failures up to three times. `Stats()` reports Sent, Dropped, and Failed
+event counts.
+
 | Setting | Default | Constraint |
 |---|---:|---|
 | Domain | `us-east-1.aws.edge.axiom.co` | Bare host; set with `WithDomain` |
@@ -116,13 +120,14 @@ fields.
 | Retries | 3 after initial attempt | Non-negative |
 | Compression | gzip enabled | Configurable with `WithCompression` |
 
-Call `Close` or `Shutdown` before process exit so queued events are drained. Without
-shutdown, up to one flush interval plus the queued events can be lost. `Close` uses a
-five-second deadline. Delivery is at-least-once: a retry after a network error can duplicate
-a batch Axiom already accepted. The queue is bounded; events that do not fit are dropped
-and counted in `Stats().Dropped`. Writes after `Close` return `len(p), nil` and are counted as
-dropped. A `log.New` front logger configured with date flags adds a timestamp inside the
-event's `message`; use flags `0` or `Logger.StdLog` instead.
+Delivery is best-effort. Events can be dropped when the queue is full or after `Close`, or
+fail after retries are exhausted, on a 4xx response, or at the shutdown deadline. A retry
+after a network error can duplicate a batch Axiom already accepted. `Stats()` counts each
+outcome. Events not delivered by the `Close`/`Shutdown` deadline count as Failed. `Close`
+uses a five-second deadline. `log.Fatal` and `os.Exit` skip deferred `Close`, so the final
+message and queue are lost; log first, then call `Shutdown` explicitly before exiting. A
+`log.New` front logger configured with date flags adds a timestamp inside the event's
+`message`; use flags `0` or `Logger.StdLog` instead.
 
 ## Notes
 

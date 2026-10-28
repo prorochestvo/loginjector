@@ -265,6 +265,16 @@ func TestWithQueueSize(t *testing.T) {
 		_, err := NewHandler("xaat-secret", "logs", WithQueueSize(0))
 		require.Error(t, err)
 	})
+	t.Run("above upper bound rejected", func(t *testing.T) {
+		t.Parallel()
+		var cfg config
+		require.Error(t, WithQueueSize(1<<20+1)(&cfg))
+	})
+	t.Run("upper bound accepted", func(t *testing.T) {
+		t.Parallel()
+		var cfg config
+		require.NoError(t, WithQueueSize(1<<20)(&cfg))
+	})
 }
 
 func TestWithMaxQueueBytes(t *testing.T) {

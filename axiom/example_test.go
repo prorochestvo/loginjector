@@ -21,7 +21,7 @@ func ExampleNewHandler() {
 	std.Printf("started")
 }
 
-func ExampleWithMinLevel() {
+func ExampleHandler_withMinLevel() {
 	ax, err := axiom.NewHandler(os.Getenv("AXIOM_TOKEN"), "app-logs")
 	if err != nil {
 		return

@@ -49,7 +49,8 @@ there is no binary, database, or server.
 - `Panicf`/`Panic` panic; the library never calls `os.Exit`.
 - `TelegramHandler` is a synchronous HTTP POST (20 s timeout): a matching message blocks
   its caller.
-- A sink implementing `LevelWriter` receives `WriteLevel` instead of `Write`; the Axiom sink is asynchronous, bounded, drops on overflow, and needs `Close`/`Shutdown` before exit.
+- A sink implementing `LevelWriter` receives `WriteLevel` instead of `Write`; the Axiom sink is
+  asynchronous, bounded, drops on overflow, and needs `Close`/`Shutdown` before exit.
 - `httptap` redaction: the default header and query-parameter sets in
   `httptap/redact.go` are always on and case-insensitive; options only add names. Do not
   weaken them.

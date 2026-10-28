@@ -2,6 +2,7 @@ package axiom
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,18 @@ import (
 
 // ErrClosed is returned by Flush after shutdown has started.
 var ErrClosed = errors.New("axiom: handler is closed")
+
+type stringJSONBuffer struct {
+	buf bytes.Buffer
+	enc *json.Encoder
+}
+
+var stringJSONPool = sync.Pool{New: func() any {
+	item := &stringJSONBuffer{}
+	item.enc = json.NewEncoder(&item.buf)
+	item.enc.SetEscapeHTML(false)
+	return item
+}}
 
 // Stats reports event counts, not batch counts.
 type Stats struct {
@@ -50,6 +63,9 @@ type Handler struct {
 	admitted     atomic.Uint64
 	completed    atomic.Uint64
 	progress     chan struct{}
+	progressMu   sync.Mutex
+	compressBuf  bytes.Buffer
+	gzipWriter   *gzip.Writer
 	sent         atomic.Uint64
 	dropped      atomic.Uint64
 	failed       atomic.Uint64
@@ -79,6 +95,10 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 		return nil, errors.New("axiom: dataset must not contain a slash")
 	}
 
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		transport = &http.Transport{}
+	}
 	cfg := config{
 		token:         token,
 		dataset:       dataset,
@@ -89,7 +109,7 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 		flushInterval: time.Second,
 		queueSize:     10000,
 		maxQueueBytes: 32 << 20,
-		httpClient:    &http.Client{Timeout: 10 * time.Second},
+		httpClient:    &http.Client{Timeout: 10 * time.Second, Transport: transport.Clone(), CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		ownsClient:    true,
 		maxRetries:    3,
 		compression:   true,
@@ -116,7 +136,10 @@ func NewHandler(token, dataset string, opts ...Option) (*Handler, error) {
 	}
 	cfg.ingestURL = strings.TrimSuffix(cfg.baseURL, "/") + "/v1/ingest/" + url.PathEscape(dataset)
 	workerCtx, cancel := context.WithCancel(context.Background())
-	h := &Handler{cfg: cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}, 1), cancel: cancel}
+	h := &Handler{cfg: cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}), cancel: cancel}
+	if cfg.compression {
+		h.gzipWriter = gzip.NewWriter(&h.compressBuf)
+	}
 	go h.run(workerCtx)
 	return h, nil
 }
@@ -143,10 +166,16 @@ func (h *Handler) Flush(ctx context.Context) error {
 	default:
 	}
 	for h.completed.Load() < target {
+		h.progressMu.Lock()
+		progress := h.progress
+		h.progressMu.Unlock()
+		if h.completed.Load() >= target {
+			break
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-h.progress:
+		case <-progress:
 		case <-h.done:
 			if h.completed.Load() < target {
 				return ErrClosed
@@ -169,9 +198,14 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 		select {
 		case <-h.done:
 		case <-ctx.Done():
-			h.cancel()
-			<-h.done
-			h.shutdownErr = ctx.Err()
+			select {
+			case <-h.done:
+				h.shutdownErr = nil
+			default:
+				h.cancel()
+				<-h.done
+				h.shutdownErr = ctx.Err()
+			}
 		}
 		if h.cfg.ownsClient {
 			h.cfg.httpClient.CloseIdleConnections()
@@ -220,29 +254,32 @@ func (h *Handler) admit(level loginjector.LogLevel, hasLevel bool, p []byte) (in
 
 // appendEvent appends one NDJSON event to dst.
 func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
+	if cap(dst)-len(dst) < len(ev.message)+128 {
+		grown := make([]byte, len(dst), len(dst)+len(ev.message)+128)
+		copy(grown, dst)
+		dst = grown
+	}
 	dst = append(dst, '{')
 	dst = append(dst, `"_time":`...)
-	timestamp, err := json.Marshal(ev.time.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return nil, fmt.Errorf("encode event time: %w", err)
-	}
-	dst = append(dst, timestamp...)
+	dst = append(dst, '"')
+	dst = ev.time.UTC().AppendFormat(dst, time.RFC3339Nano)
+	dst = append(dst, '"')
 	if ev.hasLevel {
-		levelName, marshalErr := json.Marshal(h.cfg.levelName(ev.level))
+		dst = append(dst, `,"level":`...)
+		var marshalErr error
+		dst, marshalErr = appendJSONString(dst, h.cfg.levelName(ev.level))
 		if marshalErr != nil {
 			return nil, fmt.Errorf("encode level name: %w", marshalErr)
 		}
-		dst = append(dst, `,"level":`...)
-		dst = append(dst, levelName...)
 		dst = append(dst, `,"level_num":`...)
 		dst = strconv.AppendInt(dst, int64(ev.level), 10)
 	}
-	message, err := json.Marshal(ev.message)
+	dst = append(dst, `,"message":`...)
+	var err error
+	dst, err = appendJSONString(dst, ev.message)
 	if err != nil {
 		return nil, fmt.Errorf("encode event message: %w", err)
 	}
-	dst = append(dst, `,"message":`...)
-	dst = append(dst, message...)
 	if ev.truncated {
 		dst = append(dst, `,"message_truncated":true`...)
 	}
@@ -252,6 +289,23 @@ func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
 	}
 	dst = append(dst, '}', '\n')
 	return dst, nil
+}
+
+func appendJSONString(dst []byte, value string) ([]byte, error) {
+	item, ok := stringJSONPool.Get().(*stringJSONBuffer)
+	if !ok {
+		item = &stringJSONBuffer{}
+		item.enc = json.NewEncoder(&item.buf)
+		item.enc.SetEscapeHTML(false)
+	}
+	item.buf.Reset()
+	err := item.enc.Encode(value)
+	if err == nil {
+		encoded := item.buf.Bytes()
+		dst = append(dst, encoded[:len(encoded)-1]...)
+	}
+	stringJSONPool.Put(item)
+	return dst, err
 }
 
 const (
@@ -275,7 +329,7 @@ func newEvent(now time.Time, level loginjector.LogLevel, hasLevel bool, p []byte
 	truncated := false
 	if len(trimmed) > maxMessageLen {
 		end := maxMessageLen
-		for end > 0 && !utf8.RuneStart(trimmed[end]) {
+		for back := 0; back < utf8.UTFMax-1 && end > 0 && !utf8.RuneStart(trimmed[end]); back++ {
 			end--
 		}
 		trimmed = trimmed[:end]
