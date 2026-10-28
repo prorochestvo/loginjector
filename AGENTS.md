@@ -17,9 +17,10 @@ there is no binary, database, or server.
 
 | Path | Role |
 |---|---|
-| `logger.go` | `Logger`: fan-out, hooks, `LeveledHandler`, `WriterAs`, `StdLog`, `Panicf`/`Panic` |
+| `logger.go` | `Logger`: fan-out, hooks, `LeveledHandler`, `LevelWriter`, `WriterAs`, `StdLog`, `Panicf`/`Panic` |
 | `handler.go` | handler factories: console, rotating file, file-by-format, Telegram, `WithMinLevel` |
 | `filelogger.go` | `NewFileLogger` bootstrap and its options |
+| `axiom/` | opt-in Axiom ingest sink; the root package never imports it |
 | `error.go`, `closers.go` | error types (`TraceError`, `StackTraceError`, `PublicError`, `HttpError`); `CloseOr*` |
 | `levels/` | optional `Debug`..`Critical` ladder, `Parse`/`Name` |
 | `httptap/` | opt-in HTTP middleware: payload, access, recover; the root package never imports it |
@@ -48,6 +49,7 @@ there is no binary, database, or server.
 - `Panicf`/`Panic` panic; the library never calls `os.Exit`.
 - `TelegramHandler` is a synchronous HTTP POST (20 s timeout): a matching message blocks
   its caller.
+- A sink implementing `LevelWriter` receives `WriteLevel` instead of `Write`; the Axiom sink is asynchronous, bounded, drops on overflow, and needs `Close`/`Shutdown` before exit.
 - `httptap` redaction: the default header and query-parameter sets in
   `httptap/redact.go` are always on and case-insensitive; options only add names. Do not
   weaken them.

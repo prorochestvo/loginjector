@@ -67,6 +67,63 @@ s.log.Printf("request sent (model=%s)", model) // "sqlite request sent (model=gp
 The full API — handlers, error and closer helpers, `httptap` middleware, and every
 option — is on [pkg.go.dev](https://pkg.go.dev/github.com/prorochestvo/loginjector).
 
+## Axiom
+
+The opt-in `axiom` package sends log events asynchronously to an Axiom dataset. Create an
+API token with ingest permission (`xaat-` token; personal `xapt-` tokens are rejected),
+then pass the handler to a `Logger`. The domain option takes a bare host name; its default
+is `us-east-1.aws.edge.axiom.co`.
+
+```go
+import (
+	"os"
+
+	"github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/axiom"
+	"github.com/prorochestvo/loginjector/levels"
+)
+
+func configure() error {
+	ax, err := axiom.NewHandler(os.Getenv("AXIOM_TOKEN"), "app-logs",
+		axiom.WithDomain("eu-central-1.aws.edge.axiom.co"),
+		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}))
+	if err != nil {
+		return err
+	}
+	defer ax.Close()
+	logger := loginjector.NewLogger(levels.Info, loginjector.TimestampedPrintHandler(), ax)
+	std := logger.StdLog(levels.Info, "")
+	std.Printf("started")
+	return nil
+}
+```
+
+Events are newline-delimited JSON. Each has `_time` in UTC and `message`; messages have
+trailing CR/LF removed and are truncated at 512 KiB on a UTF-8 boundary when needed. Events
+written through `WriteLevel` also include `level` and `level_num`. `WithFields` adds static
+fields to every event; its keys cannot be empty, start with `_`, or replace reserved event
+fields.
+
+| Setting | Default | Constraint |
+|---|---:|---|
+| Domain | `us-east-1.aws.edge.axiom.co` | Bare host; set with `WithDomain` |
+| Batch size | 1000 events | 1–10000 |
+| Maximum uncompressed batch | 4 MiB | At least 1 MiB |
+| Flush interval | 1 second | Positive duration |
+| Queue | 10000 events / 32 MiB | Positive; byte limit must cover a batch |
+| Level name | `levels.Name` | Customizable with `WithLevelName` |
+| HTTP client timeout | 10 seconds | Replaced with `WithHTTPClient` |
+| Retries | 3 after initial attempt | Non-negative |
+| Compression | gzip enabled | Configurable with `WithCompression` |
+
+Call `Close` or `Shutdown` before process exit so queued events are drained. Without
+shutdown, up to one flush interval plus the queued events can be lost. `Close` uses a
+five-second deadline. Delivery is at-least-once: a retry after a network error can duplicate
+a batch Axiom already accepted. The queue is bounded; events that do not fit are dropped
+and counted in `Stats().Dropped`. Writes after `Close` return `len(p), nil` and are counted as
+dropped. A `log.New` front logger configured with date flags adds a timestamp inside the
+event's `message`; use flags `0` or `Logger.StdLog` instead.
+
 ## Notes
 
 - **`Panicf`/`Panic` `panic`, they do not call `os.Exit`** — a deferred `recover` can

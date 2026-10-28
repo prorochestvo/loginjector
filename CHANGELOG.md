@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `LevelWriter` for sinks that need the message severity, and the opt-in `axiom` package for asynchronous Axiom ingest.
 - `httptap.WithRedactQueryParams(names...)` — additive-only option for
   `NewPayloadHandlerWithOptions` to redact query-parameter values. The default set
   (`access_token`, `refresh_token`, `id_token`, `client_secret`, `api_key`, `apikey`,
@@ -16,6 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Existing sinks that define `WriteLevel(LogLevel, []byte)` are now called through `LevelWriter`.
 - Payload request line: query parameters in the default set are logged as `name=[REDACTED]`;
   other parameters are byte-identical.
 - Payload headers: `X-Api-Key` and `X-Auth-Token` lines no longer appear in request or
