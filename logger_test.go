@@ -284,7 +284,12 @@ func TestLogger_Hook(t *testing.T) {
 		n, err := l.WriteLog(logLevelWarning, []byte("hook"))
 
 		require.NoError(t, err)
-		require.Equal(t, 0, n, "a hook below the handler threshold does not count as a handler")
+		require.Equal(
+			t,
+			0,
+			n,
+			"a hook below the handler threshold does not count as a handler",
+		)
 		require.Equal(t, []LogLevel{logLevelWarning}, sink.levels)
 	})
 
@@ -782,7 +787,10 @@ func TestLogger_WriteLog(t *testing.T) {
 		t.Run("single minimum wrapper", func(t *testing.T) {
 			t.Parallel()
 			sink := &recordingLevelWriter{}
-			logger := NewLogger(logLevelDebug, WithMinLevel(logLevelInfo, sink))
+			logger := NewLogger(
+				logLevelDebug,
+				WithMinLevel(logLevelInfo, sink),
+			)
 			_, err := logger.WriteLog(logLevelSevere, []byte("wrapped"))
 			require.NoError(t, err)
 			require.Equal(t, []LogLevel{logLevelSevere}, sink.levels)
@@ -791,7 +799,10 @@ func TestLogger_WriteLog(t *testing.T) {
 		t.Run("nested minimum wrappers", func(t *testing.T) {
 			t.Parallel()
 			sink := &recordingLevelWriter{}
-			handler := WithMinLevel(logLevelDebug, WithMinLevel(logLevelInfo, sink))
+			handler := WithMinLevel(
+				logLevelDebug,
+				WithMinLevel(logLevelInfo, sink),
+			)
 			logger := NewLogger(logLevelDebug, handler)
 			_, err := logger.WriteLog(logLevelSevere, []byte("wrapped"))
 			require.NoError(t, err)
@@ -824,12 +835,30 @@ func TestLogger_WriteLog(t *testing.T) {
 	t.Run("level writer panic is recovered through nested minimum wrappers", func(t *testing.T) {
 		t.Parallel()
 		sink := &panickingLevelWriter{}
-		logger := NewLogger(logLevelDebug, WithMinLevel(logLevelInfo, WithMinLevel(logLevelWarning, sink)))
+		logger := NewLogger(
+			logLevelDebug,
+			WithMinLevel(
+				logLevelInfo,
+				WithMinLevel(logLevelWarning, sink),
+			),
+		)
 		_, err := logger.WriteLog(logLevelSevere, []byte("panic"))
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "panicked")
-		require.Contains(t, err.Error(), "*loginjector.panickingLevelWriter")
-		require.NotContains(t, err.Error(), "*loginjector.leveledWriter")
+		require.Contains(
+			t,
+			err.Error(),
+			"panicked",
+		)
+		require.Contains(
+			t,
+			err.Error(),
+			"*loginjector.panickingLevelWriter",
+		)
+		require.NotContains(
+			t,
+			err.Error(),
+			"*loginjector.leveledWriter",
+		)
 	})
 
 	t.Run("panicking sink among several is reported as an error", func(t *testing.T) {
@@ -1105,7 +1134,13 @@ func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
 
 	sink := &countingLevelWriter{counts: make(map[LogLevel]int)}
 	logger := NewLogger(logLevelDebug, sink)
-	logger.Hook(sink, 0, 1, 2, 3)
+	logger.Hook(
+		sink,
+		0,
+		1,
+		2,
+		3,
+	)
 	wrapped := logger.handlers[0].(*writer)
 
 	var wg sync.WaitGroup
@@ -1125,9 +1160,17 @@ func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
 
 	for level := range mixedLevels {
 		// each WriteLog reaches the direct handler and the hook at its exact level.
-		require.Equal(t, goroutines*iterations/mixedLevels*2, sink.counts[LogLevel(level)])
+		require.Equal(
+			t,
+			goroutines*iterations/mixedLevels*2,
+			sink.counts[LogLevel(level)],
+		)
 	}
-	require.Equal(t, goroutines*iterations, sink.writeCalls)
+	require.Equal(
+		t,
+		goroutines*iterations,
+		sink.writeCalls,
+	)
 }
 
 //nolint:paralleltest // calls log.SetOutput on the std logger
@@ -1392,7 +1435,16 @@ func TestLogger_SinkPanicNotice(t *testing.T) {
 	})
 
 	t.Run("level writer panic through nested minimum wrappers names inner sink", func(t *testing.T) {
-		logger := NewLogger(logLevelDebug, WithMinLevel(logLevelInfo, WithMinLevel(logLevelWarning, &panickingLevelWriter{})))
+		logger := NewLogger(
+			logLevelDebug,
+			WithMinLevel(
+				logLevelInfo,
+				WithMinLevel(
+					logLevelWarning,
+					&panickingLevelWriter{},
+				),
+			),
+		)
 		out := captureStderr(t, func() {
 			_, err := logger.WriteLog(logLevelSevere, []byte("message"))
 			require.Error(t, err)

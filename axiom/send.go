@@ -37,18 +37,10 @@ func (h *Handler) run(ctx context.Context) {
 			)
 		}
 		if err != nil {
-			h.failed.Add(
-				uint64(
-					len(batch),
-				),
-			)
+			h.failed.Add(uint64(len(batch)))
 			h.release(batch)
 			h.report(err)
-			h.complete(
-				uint64(
-					len(batch),
-				),
-			)
+			h.complete(uint64(len(batch)))
 			batch = resetBatch(batch)
 			encoded.Reset()
 			return
@@ -97,16 +89,8 @@ func (h *Handler) run(ctx context.Context) {
 					batch = append(batch, item)
 				default:
 					if len(batch) > 0 {
-						h.failed.Add(
-							uint64(
-								len(batch),
-							),
-						)
-						h.complete(
-							uint64(
-								len(batch),
-							),
-						)
+						h.failed.Add(uint64(len(batch)))
+						h.complete(uint64(len(batch)))
 						h.release(batch)
 					}
 					h.reportDrops()
@@ -218,24 +202,18 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 				body,
 				&result,
 			); err != nil {
-				h.failed.Add(
-					uint64(count),
-				)
+				h.failed.Add(uint64(count))
 				msg := fmt.Sprintf("axiom: decode HTTP 200 response: %v", err)
 				h.report(
 					errors.New(
 						h.redact(msg),
 					),
 				)
-				h.complete(
-					uint64(count),
-				)
+				h.complete(uint64(count))
 				return
 			}
 			h.accountResponse(result, count)
-			h.complete(
-				uint64(count),
-			)
+			h.complete(uint64(count))
 			return
 		case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 			finalErr = h.responseError(resp.StatusCode, body)
@@ -252,28 +230,20 @@ func (h *Handler) deliver(ctx context.Context, payload []byte, count int) {
 				}
 			}
 		default:
-			h.failed.Add(
-				uint64(count),
-			)
+			h.failed.Add(uint64(count))
 			h.report(
 				h.responseError(resp.StatusCode, body),
 			)
-			h.complete(
-				uint64(count),
-			)
+			h.complete(uint64(count))
 			return
 		}
 		break
 	}
-	h.failed.Add(
-		uint64(count),
-	)
+	h.failed.Add(uint64(count))
 	if finalErr != nil {
 		h.report(finalErr)
 	}
-	h.complete(
-		uint64(count),
-	)
+	h.complete(uint64(count))
 }
 
 func (h *Handler) accountResponse(result ingestResponse, count int) {
@@ -286,17 +256,11 @@ func (h *Handler) accountResponse(result ingestResponse, count int) {
 		count-ingested,
 	)
 	inconsistent := result.Ingested != ingested || result.Failed != failed || ingested+failed != count
-	h.sent.Add(
-		uint64(ingested),
-	)
-	h.failed.Add(
-		uint64(failed),
-	)
+	h.sent.Add(uint64(ingested))
+	h.failed.Add(uint64(failed))
 	var accountingErr error
 	if remainder := count - ingested - failed; inconsistent || remainder > 0 {
-		h.failed.Add(
-			uint64(remainder),
-		)
+		h.failed.Add(uint64(remainder))
 		if remainder > 0 {
 			accountingErr = fmt.Errorf(
 				"axiom: response accounted for %d of %d events",
@@ -400,7 +364,10 @@ func (h *Handler) emit(err error, dropDelta uint64) {
 		defer func() {
 			if v := recover(); v != nil {
 				notice := fmt.Sprintf("axiom: error handler panicked: %v\n", v)
-				_, _ = io.WriteString(h.cfg.errorOutput, h.redact(notice))
+				_, _ = io.WriteString(
+					h.cfg.errorOutput,
+					h.redact(notice),
+				)
 			}
 		}()
 		h.cfg.errorHandler(err)
@@ -449,16 +416,12 @@ func (h *Handler) redact(s string) string {
 
 func (h *Handler) responseError(status int, body []byte) error {
 	body = []byte(
-		h.redact(
-			string(body),
-		),
+		h.redact(string(body)),
 	)
 	if len(body) > errorBodyBytes {
 		body = []byte(strings.ToValidUTF8(string(body[:errorBodyBytes]), ""))
 	}
-	message := strings.TrimSpace(
-		string(body),
-	)
+	message := strings.TrimSpace(string(body))
 	if message == "" {
 		return fmt.Errorf("axiom: HTTP %d", status)
 	}

@@ -46,12 +46,7 @@ func TestIntegration_smokeIngest(t *testing.T) {
 		{level: levels.Warning, message: "warning event"},
 		{level: levels.Error, message: "error event"},
 	} {
-		_, err := handler.WriteLevel(
-			event.level,
-			[]byte(
-				fmt.Sprintf("%s %s", runID, event.message),
-			),
-		)
+		_, err := handler.WriteLevel(event.level, []byte(fmt.Sprintf("%s %s", runID, event.message)))
 		require.NoError(t, err)
 	}
 
@@ -62,11 +57,7 @@ func TestIntegration_smokeIngest(t *testing.T) {
 		payloadBytes-len(prefix),
 	)
 	for range 8 {
-		_, err := handler.Write(
-			[]byte(
-				prefix + padding,
-			),
-		)
+		_, err := handler.Write([]byte(prefix + padding))
 		require.NoError(t, err)
 	}
 

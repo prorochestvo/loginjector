@@ -94,11 +94,7 @@ func TestWithFields(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = h.Close() })
 		fields["service"] = "after"
-		require.Equal(
-			t,
-			[]byte(`"service":"before"`),
-			h.cfg.fields,
-		)
+		require.Equal(t, []byte(`"service":"before"`), h.cfg.fields)
 		dst, err := h.appendEvent(
 			nil,
 			newEvent(
@@ -129,11 +125,7 @@ func TestWithFields(t *testing.T) {
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = h.Close() })
-		require.Equal(
-			t,
-			[]byte(`"second":2`),
-			h.cfg.fields,
-		)
+		require.Equal(t, []byte(`"second":2`), h.cfg.fields)
 	})
 	t.Run("nil map", func(t *testing.T) {
 		t.Parallel()
@@ -270,7 +262,7 @@ func TestWithBatchSize(t *testing.T) {
 			require.Equal(t, 10000, h.cfg.batchSize)
 		})
 	})
-	t.Run("invalid bounds rejected", func(t *testing.T) {
+	t.Run("zero rejected", func(t *testing.T) {
 		t.Parallel()
 		_, err := NewHandler(
 			"xaat-secret",
@@ -278,7 +270,10 @@ func TestWithBatchSize(t *testing.T) {
 			WithBatchSize(0),
 		)
 		require.Error(t, err)
-		_, err = NewHandler(
+	})
+	t.Run("above maximum rejected", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewHandler(
 			"xaat-secret",
 			"logs",
 			WithBatchSize(10001),

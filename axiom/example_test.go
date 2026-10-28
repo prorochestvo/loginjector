@@ -10,15 +10,11 @@ import (
 
 func ExampleNewHandler() {
 	ax, err := axiom.NewHandler(
-
 		axiom.Token(
 			os.Getenv("AXIOM_TOKEN"),
 		),
-
 		"app-logs",
-
 		axiom.WithDomain("eu-central-1.aws.edge.axiom.co"),
-
 		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}),
 	)
 	if err != nil {
@@ -35,12 +31,7 @@ func ExampleNewHandler() {
 }
 
 func ExampleHandler_withMinLevel() {
-	ax, err := axiom.NewHandler(
-		axiom.Token(
-			os.Getenv("AXIOM_TOKEN"),
-		),
-		"app-logs",
-	)
+	ax, err := axiom.NewHandler(axiom.Token(os.Getenv("AXIOM_TOKEN")), "app-logs")
 	if err != nil {
 		return
 	}

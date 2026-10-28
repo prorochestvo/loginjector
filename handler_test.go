@@ -1430,17 +1430,39 @@ func TestWithMinLevel(t *testing.T) {
 	t.Run("timestamped print output stays unchanged when wrapped", func(t *testing.T) {
 		t.Parallel()
 		var output bytes.Buffer
-		fixed := time.Date(2024, time.March, 15, 10, 30, 45, 0, time.UTC)
-		handler := WithMinLevel(3, TimestampedPrintHandler(
-			withClock(func() time.Time { return fixed }),
-			WithOutput(&output),
-		))
+		fixed := time.Date(
+			2024,
+			time.March,
+			15,
+			10,
+			30,
+			45,
+			0,
+			time.UTC,
+		)
+		handler := WithMinLevel(
+			3,
+			TimestampedPrintHandler(
+				withClock(func() time.Time { return fixed }),
+				WithOutput(
+					&output,
+				),
+			),
+		)
 		l := NewLogger(0, handler)
 
 		n, err := l.WriteLog(5, []byte("hello\n"))
 
 		require.NoError(t, err)
-		require.Equal(t, len("hello\n"), n)
-		require.Equal(t, "2024/03/15 10:30:45 hello\n", output.String())
+		require.Equal(
+			t,
+			len("hello\n"),
+			n,
+		)
+		require.Equal(
+			t,
+			"2024/03/15 10:30:45 hello\n",
+			output.String(),
+		)
 	})
 }

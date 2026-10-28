@@ -132,7 +132,14 @@ func NewHandler(token Token, dataset Dataset, opts ...Option) (*Handler, error) 
 	workerCtx, cancel := context.WithCancel(
 		context.Background(),
 	)
-	h := &Handler{cfg: &cfg, queue: make(chan queuedEvent, cfg.queueSize), wake: make(chan struct{}, 1), done: make(chan struct{}), progress: make(chan struct{}), cancel: cancel}
+	h := &Handler{
+		cfg:      &cfg,
+		queue:    make(chan queuedEvent, cfg.queueSize),
+		wake:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
+		progress: make(chan struct{}),
+		cancel:   cancel,
+	}
 	if cfg.compression {
 		h.gzipWriter = gzip.NewWriter(
 			&h.compressBuf,
@@ -295,11 +302,7 @@ func (h *Handler) appendEvent(dst []byte, ev event) ([]byte, error) {
 			return nil, fmt.Errorf("encode level name: %w", marshalErr)
 		}
 		dst = append(dst, `,"level_num":`...)
-		dst = strconv.AppendInt(
-			dst,
-			int64(ev.level),
-			10,
-		)
+		dst = strconv.AppendInt(dst, int64(ev.level), 10)
 	}
 	dst = append(dst, `,"message":`...)
 	var err error
@@ -326,9 +329,9 @@ type Dataset string
 
 // Stats reports event counts, not batch counts.
 type Stats struct {
-	Sent    uint64 // Events successfully delivered.
-	Dropped uint64 // Events refused at admission.
-	Failed  uint64 // Events whose delivery failed.
+	Sent    uint64 // events successfully delivered.
+	Dropped uint64 // events refused at admission.
+	Failed  uint64 // events whose delivery failed.
 }
 
 const (

@@ -38,23 +38,21 @@ func TestHandler_Write(t *testing.T) {
 	t.Run("exactly full batch sends without flush", func(t *testing.T) {
 		t.Parallel()
 		got := make(chan int, 1)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				events, _, err := requestEvents(r)
-				if err != nil {
-					http.Error(w, "bad", http.StatusBadRequest)
-					return
-				}
-				got <- len(events)
-				responseJSON(
-					w,
-					200,
-					`{"ingested":`+strconv.Itoa(
-						len(events),
-					)+`}`,
-				)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			got <- len(events)
+			responseJSON(
+				w,
+				200,
+				`{"ingested":`+strconv.Itoa(
+					len(events),
+				)+`}`,
+			)
+		}))
 		t.Cleanup(server.Close)
 		fixed := time.Date(
 			2026,
@@ -101,9 +99,7 @@ func TestHandler_Write(t *testing.T) {
 			(1<<20)-lineLen(msgs[0])-lineLen(msgs[1])-lineLen(""),
 		)
 		for _, message := range msgs {
-			_, err := h.Write(
-				[]byte(message),
-			)
+			_, err := h.Write([]byte(message))
 			require.NoError(t, err)
 		}
 		select {
@@ -116,40 +112,34 @@ func TestHandler_Write(t *testing.T) {
 		}
 	})
 
-	t.Run("batchByCount", func(t *testing.T) {
+	t.Run("batch by count", func(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
 		var eventCount atomic.Int64
 		messages := make(chan string, 3)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				events, _, err := requestEvents(r)
-				if err != nil {
-					http.Error(
-						w,
-						err.Error(),
-						http.StatusBadRequest,
-					)
-					return
-				}
-				requests.Add(1)
-				eventCount.Add(
-					int64(
-						len(events),
-					),
-				)
-				for _, event := range events {
-					messages <- event["message"].(string)
-				}
-				responseJSON(
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(
 					w,
-					200,
-					`{"ingested":`+strconv.Itoa(
-						len(events),
-					)+`,"failed":0}`,
+					err.Error(),
+					http.StatusBadRequest,
 				)
-			}),
-		)
+				return
+			}
+			requests.Add(1)
+			eventCount.Add(int64(len(events)))
+			for _, event := range events {
+				messages <- event["message"].(string)
+			}
+			responseJSON(
+				w,
+				200,
+				`{"ingested":`+strconv.Itoa(
+					len(events),
+				)+`,"failed":0}`,
+			)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -157,9 +147,7 @@ func TestHandler_Write(t *testing.T) {
 			WithBatchSize(2),
 		)
 		for _, msg := range []string{"one", "two", "three"} {
-			_, err := h.Write(
-				[]byte(msg),
-			)
+			_, err := h.Write([]byte(msg))
 			require.NoError(t, err)
 		}
 		flushHandler(t, h)
@@ -174,40 +162,33 @@ func TestHandler_Write(t *testing.T) {
 			eventCount.Load(),
 		)
 		require.ElementsMatch(t, []string{"one", "two", "three"}, []string{<-messages, <-messages, <-messages})
-		require.Equal(
-			t,
-			uint64(3),
-			h.Stats().Sent,
-		)
-
+		require.Equal(t, uint64(3), h.Stats().Sent)
 	})
 
-	t.Run("batchFillsByCountOnly", func(t *testing.T) {
+	t.Run("batch fills by count only", func(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
 		eventCounts := make(chan int, 3)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				events, _, err := requestEvents(r)
-				if err != nil {
-					http.Error(
-						w,
-						err.Error(),
-						http.StatusBadRequest,
-					)
-					return
-				}
-				requests.Add(1)
-				eventCounts <- len(events)
-				responseJSON(
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(
 					w,
-					200,
-					`{"ingested":`+strconv.Itoa(
-						len(events),
-					)+`,"failed":0}`,
+					err.Error(),
+					http.StatusBadRequest,
 				)
-			}),
-		)
+				return
+			}
+			requests.Add(1)
+			eventCounts <- len(events)
+			responseJSON(
+				w,
+				200,
+				`{"ingested":`+strconv.Itoa(
+					len(events),
+				)+`,"failed":0}`,
+			)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -217,9 +198,7 @@ func TestHandler_Write(t *testing.T) {
 			WithMaxRetries(0),
 		)
 		for _, msg := range []string{"one", "two", "three"} {
-			_, err := h.Write(
-				[]byte(msg),
-			)
+			_, err := h.Write([]byte(msg))
 			require.NoError(t, err)
 		}
 		select {
@@ -239,34 +218,27 @@ func TestHandler_Write(t *testing.T) {
 			1,
 			requests.Load(),
 		)
-		require.Equal(
-			t,
-			uint64(3),
-			h.Stats().Sent,
-		)
-
+		require.Equal(t, uint64(3), h.Stats().Sent)
 	})
 
-	t.Run("batchByBytes", func(t *testing.T) {
+	t.Run("batch by bytes", func(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				events, _, err := requestEvents(r)
-				if err != nil {
-					http.Error(w, "bad", http.StatusBadRequest)
-					return
-				}
-				responseJSON(
-					w,
-					200,
-					`{"ingested":`+strconv.Itoa(
-						len(events),
-					)+`}`,
-				)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			responseJSON(
+				w,
+				200,
+				`{"ingested":`+strconv.Itoa(
+					len(events),
+				)+`}`,
+			)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -275,18 +247,14 @@ func TestHandler_Write(t *testing.T) {
 				1<<20,
 			),
 		)
-		// Two encoded lines each exceed half the batch limit.
+		// two encoded lines each exceed half the batch limit.
 		msg := strings.Repeat(
 			"x",
 			600<<10,
 		)
-		_, err := h.Write(
-			[]byte(msg),
-		)
+		_, err := h.Write([]byte(msg))
 		require.NoError(t, err)
-		_, err = h.Write(
-			[]byte(msg),
-		)
+		_, err = h.Write([]byte(msg))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -294,31 +262,28 @@ func TestHandler_Write(t *testing.T) {
 			2,
 			requests.Load(),
 		)
-
 	})
 
-	t.Run("batchByBytesExactBoundary", func(t *testing.T) {
+	t.Run("batch by bytes exact boundary", func(t *testing.T) {
 		t.Parallel()
 		assertBatch := func(t *testing.T, over bool, want int) {
 			t.Helper()
 			var batches [][]map[string]any
-			server := httptest.NewServer(
-				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					events, _, err := requestEvents(r)
-					if err != nil {
-						http.Error(w, "bad", http.StatusBadRequest)
-						return
-					}
-					batches = append(batches, events)
-					responseJSON(
-						w,
-						200,
-						`{"ingested":`+strconv.Itoa(
-							len(events),
-						)+`}`,
-					)
-				}),
-			)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				events, _, err := requestEvents(r)
+				if err != nil {
+					http.Error(w, "bad", http.StatusBadRequest)
+					return
+				}
+				batches = append(batches, events)
+				responseJSON(
+					w,
+					200,
+					`{"ingested":`+strconv.Itoa(
+						len(events),
+					)+`}`,
+				)
+			}))
 			t.Cleanup(server.Close)
 			fixed := time.Date(
 				2026,
@@ -369,9 +334,7 @@ func TestHandler_Write(t *testing.T) {
 				target-lineLen(msgs[0])-lineLen(msgs[1])-lineLen(""),
 			)
 			for _, message := range msgs {
-				_, err := h.Write(
-					[]byte(message),
-				)
+				_, err := h.Write([]byte(message))
 				require.NoError(t, err)
 			}
 			flushHandler(t, h)
@@ -390,23 +353,20 @@ func TestHandler_Write(t *testing.T) {
 			t.Parallel()
 			assertBatch(t, true, 2)
 		})
-
 	})
 
-	t.Run("queueFullDrops", func(t *testing.T) {
+	t.Run("queue full drops", func(t *testing.T) {
 		t.Parallel()
 		started, release := make(chan struct{}), make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				select {
-				case <-started:
-				default:
-					close(started)
-				}
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -415,9 +375,7 @@ func TestHandler_Write(t *testing.T) {
 			WithQueueSize(1),
 			WithMaxRetries(0),
 		)
-		_, err := h.Write(
-			[]byte("first"),
-		)
+		_, err := h.Write([]byte("first"))
 		require.NoError(t, err)
 		select {
 		case <-started:
@@ -426,13 +384,9 @@ func TestHandler_Write(t *testing.T) {
 		):
 			t.Fatal("request did not start")
 		}
-		_, _ = h.Write(
-			[]byte("queued"),
-		)
+		_, _ = h.Write([]byte("queued"))
 		start := time.Now()
-		_, err = h.Write(
-			[]byte("dropped"),
-		)
+		_, err = h.Write([]byte("dropped"))
 		require.NoError(t, err)
 		require.Less(
 			t,
@@ -446,28 +400,21 @@ func TestHandler_Write(t *testing.T) {
 		)
 		defer cancel()
 		_ = h.Shutdown(ctx)
-		require.GreaterOrEqual(
-			t,
-			h.Stats().Dropped,
-			uint64(1),
-		)
-
+		require.GreaterOrEqual(t, h.Stats().Dropped, uint64(1))
 	})
 
-	t.Run("byteBudgetDrops", func(t *testing.T) {
+	t.Run("byte budget drops", func(t *testing.T) {
 		t.Parallel()
 		started, release := make(chan struct{}), make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				select {
-				case <-started:
-				default:
-					close(started)
-				}
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -500,11 +447,7 @@ func TestHandler_Write(t *testing.T) {
 			_, err = h.Write(message)
 			require.NoError(t, err)
 		}
-		require.GreaterOrEqual(
-			t,
-			h.Stats().Dropped,
-			uint64(1),
-		)
+		require.GreaterOrEqual(t, h.Stats().Dropped, uint64(1))
 		close(release)
 		ctx, cancel := context.WithTimeout(
 			context.Background(),
@@ -512,19 +455,16 @@ func TestHandler_Write(t *testing.T) {
 		)
 		defer cancel()
 		_ = h.Shutdown(ctx)
-
 	})
 
-	t.Run("callerMutatesSlice", func(t *testing.T) {
+	t.Run("caller mutates slice", func(t *testing.T) {
 		t.Parallel()
 		got := make(chan string, 1)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				events, _, _ := requestEvents(r)
-				got <- events[0]["message"].(string)
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, _ := requestEvents(r)
+			got <- events[0]["message"].(string)
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -541,27 +481,20 @@ func TestHandler_Write(t *testing.T) {
 			"original",
 			<-got,
 		)
-
 	})
 
-	t.Run("oversizedSingleEvent", func(t *testing.T) {
+	t.Run("oversized single event", func(t *testing.T) {
 		t.Parallel()
 		var eventCount atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				events, _, err := requestEvents(r)
-				if err != nil {
-					http.Error(w, "bad", http.StatusBadRequest)
-					return
-				}
-				eventCount.Store(
-					int64(
-						len(events),
-					),
-				)
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(w, "bad", http.StatusBadRequest)
+				return
+			}
+			eventCount.Store(int64(len(events)))
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -575,9 +508,7 @@ func TestHandler_Write(t *testing.T) {
 			"<\x01",
 			256<<10,
 		)
-		_, err := h.Write(
-			[]byte(message),
-		)
+		_, err := h.Write([]byte(message))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -585,28 +516,50 @@ func TestHandler_Write(t *testing.T) {
 			1,
 			eventCount.Load(),
 		)
-
+	})
+	t.Run("batch by interval", func(t *testing.T) {
+		t.Parallel()
+		got := make(chan struct{}, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			got <- struct{}{}
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
+		t.Cleanup(server.Close)
+		h := testHandler(
+			t,
+			server,
+			WithFlushInterval(
+				20*time.Millisecond,
+			),
+		)
+		_, err := h.Write([]byte("tick"))
+		require.NoError(t, err)
+		select {
+		case <-got:
+		case <-time.After(
+			5 * time.Second,
+		):
+			t.Fatal("flush interval did not send batch")
+		}
 	})
 }
 
 func TestHandler_WriteForRaceCondition(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(
-		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			events, _, err := requestEvents(r)
-			if err != nil {
-				http.Error(w, "bad", http.StatusBadRequest)
-				return
-			}
-			responseJSON(
-				w,
-				200,
-				`{"ingested":`+strconv.Itoa(
-					len(events),
-				)+`}`,
-			)
-		}),
-	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		events, _, err := requestEvents(r)
+		if err != nil {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		responseJSON(
+			w,
+			200,
+			`{"ingested":`+strconv.Itoa(
+				len(events),
+			)+`}`,
+		)
+	}))
 	t.Cleanup(server.Close)
 	h := testHandler(
 		t,
@@ -622,10 +575,7 @@ func TestHandler_WriteForRaceCondition(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range writes {
-				logger.WriteLog(
-					1,
-					[]byte("race"),
-				)
+				logger.WriteLog(1, []byte("race"))
 			}
 		}()
 	}
@@ -651,26 +601,20 @@ func TestHandler_WriteForRaceCondition(t *testing.T) {
 
 func TestHandler_Flush(t *testing.T) {
 	t.Parallel()
-	t.Run("concurrentFlushAllReturn", func(t *testing.T) {
+	t.Run("concurrent flush all return", func(t *testing.T) {
 		t.Parallel()
 		var count atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ev, _, _ := requestEvents(r)
-				count.Add(
-					int64(
-						len(ev),
-					),
-				)
-				responseJSON(
-					w,
-					200,
-					`{"ingested":`+strconv.Itoa(
-						len(ev),
-					)+`}`,
-				)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ev, _, _ := requestEvents(r)
+			count.Add(int64(len(ev)))
+			responseJSON(
+				w,
+				200,
+				`{"ingested":`+strconv.Itoa(
+					len(ev),
+				)+`}`,
+			)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -678,9 +622,7 @@ func TestHandler_Flush(t *testing.T) {
 			WithFlushInterval(time.Hour),
 		)
 		for range 1010 {
-			_, err := h.Write(
-				[]byte("x"),
-			)
+			_, err := h.Write([]byte("x"))
 			require.NoError(t, err)
 		}
 		var wg sync.WaitGroup
@@ -707,23 +649,16 @@ func TestHandler_Flush(t *testing.T) {
 			1010,
 			count.Load(),
 		)
-		require.Equal(
-			t,
-			uint64(1010),
-			h.Stats().Sent,
-		)
-
+		require.Equal(t, uint64(1010), h.Stats().Sent)
 	})
-	t.Run("flushDeadline", func(t *testing.T) {
+	t.Run("flush deadline", func(t *testing.T) {
 		t.Parallel()
 		started, release := make(chan struct{}), make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				close(started)
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(started)
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		defer close(release)
 		h := testHandler(
@@ -731,9 +666,7 @@ func TestHandler_Flush(t *testing.T) {
 			server,
 			WithBatchSize(1),
 		)
-		_, err := h.Write(
-			[]byte("hang"),
-		)
+		_, err := h.Write([]byte("hang"))
 		require.NoError(t, err)
 		<-started
 		ctx, cancel := context.WithTimeout(
@@ -746,13 +679,10 @@ func TestHandler_Flush(t *testing.T) {
 			h.Flush(ctx),
 			context.DeadlineExceeded,
 		)
-
 	})
-	t.Run("flushIdle", func(t *testing.T) {
+	t.Run("flush idle", func(t *testing.T) {
 		t.Parallel()
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
 		t.Cleanup(server.Close)
 		h := testHandler(t, server)
 		ctx, cancel := context.WithTimeout(
@@ -764,36 +694,29 @@ func TestHandler_Flush(t *testing.T) {
 			t,
 			h.Flush(ctx),
 		)
-
 	})
-	t.Run("flushWakeDrainsQueue", func(t *testing.T) {
+	t.Run("flush wake drains queue", func(t *testing.T) {
 		t.Parallel()
 		var eventCount atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				events, _, err := requestEvents(r)
-				if err != nil {
-					http.Error(
-						w,
-						err.Error(),
-						http.StatusBadRequest,
-					)
-					return
-				}
-				eventCount.Add(
-					int64(
-						len(events),
-					),
-				)
-				responseJSON(
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(
 					w,
-					200,
-					`{"ingested":`+strconv.Itoa(
-						len(events),
-					)+`,"failed":0}`,
+					err.Error(),
+					http.StatusBadRequest,
 				)
-			}),
-		)
+				return
+			}
+			eventCount.Add(int64(len(events)))
+			responseJSON(
+				w,
+				200,
+				`{"ingested":`+strconv.Itoa(
+					len(events),
+				)+`,"failed":0}`,
+			)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -819,92 +742,50 @@ func TestHandler_Flush(t *testing.T) {
 			eventCount.Load(),
 		)
 		stats := h.Stats()
-		require.Equal(
-			t,
-			uint64(1010),
-			stats.Sent,
-		)
+		require.Equal(t, uint64(1010), stats.Sent)
 		require.Zero(t, stats.Failed)
 		require.Zero(t, stats.Dropped)
-
 	})
-	t.Run("batchByInterval", func(t *testing.T) {
-		t.Parallel()
-		got := make(chan struct{}, 1)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				got <- struct{}{}
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
-		t.Cleanup(server.Close)
-		h := testHandler(
-			t,
-			server,
-			WithFlushInterval(
-				20*time.Millisecond,
-			),
-		)
-		_, err := h.Write(
-			[]byte("tick"),
-		)
-		require.NoError(t, err)
-		select {
-		case <-got:
-		case <-time.After(
-			5 * time.Second,
-		):
-			t.Fatal("flush interval did not send batch")
-		}
 
-	})
 }
 
 func TestHandler_Shutdown(t *testing.T) {
 	t.Parallel()
-	t.Run("shutdownAfterWorkerDoneReturnsNil", func(t *testing.T) {
+	t.Run("shutdown after worker done returns nil", func(t *testing.T) {
 		t.Parallel()
 		for range 64 {
-			t.Run("iteration", func(t *testing.T) {
-				t.Parallel()
-				server := httptest.NewServer(
-					http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }),
-				)
-				t.Cleanup(server.Close)
-				h := testHandler(t, server)
-				h.mu.Lock()
-				h.closed = true
-				h.mu.Unlock()
-				h.wake <- struct{}{}
-				select {
-				case <-h.done:
-				case <-time.After(
-					5 * time.Second,
-				):
-					t.Fatal("worker did not exit")
-				}
-				ctx, cancel := context.WithCancel(
-					context.Background(),
-				)
-				cancel()
-				require.NoError(
-					t,
-					h.Shutdown(ctx),
-				)
-			})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
+			t.Cleanup(server.Close)
+			h := testHandler(t, server)
+			h.mu.Lock()
+			h.closed = true
+			h.mu.Unlock()
+			h.wake <- struct{}{}
+			select {
+			case <-h.done:
+			case <-time.After(
+				5 * time.Second,
+			):
+				t.Fatal("worker did not exit")
+			}
+			ctx, cancel := context.WithCancel(
+				context.Background(),
+			)
+			cancel()
+			require.NoError(
+				t,
+				h.Shutdown(ctx),
+			)
 		}
-
 	})
-	t.Run("shutdownDuringBackoff", func(t *testing.T) {
+	t.Run("shutdown during backoff", func(t *testing.T) {
 		t.Parallel()
 		started := make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				close(started)
-				w.Header().Set("Retry-After", "30")
-				responseJSON(w, 429, "later")
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(started)
+			w.Header().Set("Retry-After", "30")
+			responseJSON(w, 429, "later")
+		}))
 		t.Cleanup(server.Close)
 		waiting := make(chan struct{})
 		h := testHandler(
@@ -914,9 +795,7 @@ func TestHandler_Shutdown(t *testing.T) {
 			WithMaxRetries(3),
 			withClock(time.Now, func(ctx context.Context, _ time.Duration) bool { close(waiting); <-ctx.Done(); return false }),
 		)
-		_, err := h.Write(
-			[]byte("backoff"),
-		)
+		_, err := h.Write([]byte("backoff"))
 		require.NoError(t, err)
 		<-started
 		<-waiting
@@ -931,23 +810,16 @@ func TestHandler_Shutdown(t *testing.T) {
 			context.DeadlineExceeded,
 		)
 		<-h.done
-		require.Equal(
-			t,
-			uint64(1),
-			h.Stats().Failed,
-		)
-
+		require.Equal(t, uint64(1), h.Stats().Failed)
 	})
-	t.Run("shutdownHangingServer", func(t *testing.T) {
+	t.Run("shutdown hanging server", func(t *testing.T) {
 		t.Parallel()
 		started, release := make(chan struct{}), make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				close(started)
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(started)
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		var releaseOnce sync.Once
 		defer releaseOnce.Do(func() { close(release) })
@@ -956,9 +828,7 @@ func TestHandler_Shutdown(t *testing.T) {
 			server,
 			WithBatchSize(1),
 		)
-		_, err := h.Write(
-			[]byte("hang"),
-		)
+		_, err := h.Write([]byte("hang"))
 		require.NoError(t, err)
 		select {
 		case <-started:
@@ -983,23 +853,16 @@ func TestHandler_Shutdown(t *testing.T) {
 		default:
 			t.Fatal("worker did not exit")
 		}
-		require.Equal(
-			t,
-			uint64(1),
-			h.Stats().Failed,
-		)
-
+		require.Equal(t, uint64(1), h.Stats().Failed)
 	})
-	t.Run("concurrentShutdownUsesEachCallersDeadline", func(t *testing.T) {
+	t.Run("concurrent shutdown uses each callers deadline", func(t *testing.T) {
 		t.Parallel()
 		started, release := make(chan struct{}), make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				close(started)
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(started)
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		var releaseOnce sync.Once
 		defer releaseOnce.Do(func() { close(release) })
@@ -1008,9 +871,7 @@ func TestHandler_Shutdown(t *testing.T) {
 			server,
 			WithBatchSize(1),
 		)
-		_, err := h.Write(
-			[]byte("hang"),
-		)
+		_, err := h.Write([]byte("hang"))
 		require.NoError(t, err)
 		select {
 		case <-started:
@@ -1043,9 +904,8 @@ func TestHandler_Shutdown(t *testing.T) {
 			t,
 			<-firstDone,
 		)
-
 	})
-	t.Run("shutdownReportsSuppressed", func(t *testing.T) {
+	t.Run("shutdown reports suppressed", func(t *testing.T) {
 		t.Parallel()
 		now := time.Date(
 			2026,
@@ -1060,9 +920,7 @@ func TestHandler_Shutdown(t *testing.T) {
 		var clockMu sync.Mutex
 		var reportsMu sync.Mutex
 		var reports []string
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "bad") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "bad") }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1080,9 +938,7 @@ func TestHandler_Shutdown(t *testing.T) {
 			withClock(func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }, func(context.Context, time.Duration) bool { return true }),
 		)
 		for i, message := range []string{"first", "second"} {
-			_, err := h.Write(
-				[]byte(message),
-			)
+			_, err := h.Write([]byte(message))
 			require.NoError(t, err)
 			flushHandler(t, h)
 			if i == 0 {
@@ -1101,7 +957,6 @@ func TestHandler_Shutdown(t *testing.T) {
 		require.Len(t, reports, 2)
 		require.Contains(t, reports[1], "suppressed 1")
 		require.Contains(t, reports[1], "axiom: dropped 2 events")
-
 	})
 }
 
@@ -1109,17 +964,13 @@ func TestHandler_Shutdown(t *testing.T) {
 //
 //nolint:paralleltest,tparallel // noGoroutineLeak reads the process-wide goroutine count
 func TestHandler_Close(t *testing.T) {
-	t.Run("closeIdempotent", func(t *testing.T) {
+	t.Run("close idempotent", func(t *testing.T) {
 		t.Parallel()
 		var count atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { count.Add(1); responseJSON(w, 200, `{"ingested":1}`) }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { count.Add(1); responseJSON(w, 200, `{"ingested":1}`) }))
 		t.Cleanup(server.Close)
 		h := testHandler(t, server)
-		_, err := h.Write(
-			[]byte("queued"),
-		)
+		_, err := h.Write([]byte("queued"))
 		require.NoError(t, err)
 		require.NoError(
 			t,
@@ -1134,16 +985,10 @@ func TestHandler_Close(t *testing.T) {
 			1,
 			count.Load(),
 		)
-		n, err := h.Write(
-			[]byte("after"),
-		)
+		n, err := h.Write([]byte("after"))
 		require.NoError(t, err)
 		require.Equal(t, 5, n)
-		require.Equal(
-			t,
-			uint64(1),
-			h.Stats().Dropped,
-		)
+		require.Equal(t, uint64(1), h.Stats().Dropped)
 		require.ErrorIs(
 			t,
 			h.Flush(
@@ -1151,22 +996,17 @@ func TestHandler_Close(t *testing.T) {
 			),
 			ErrClosed,
 		)
-
 	})
-	t.Run("noGoroutineLeak", func(t *testing.T) {
+	t.Run("no goroutine leak", func(t *testing.T) {
 		before := runtime.NumGoroutine()
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
 			server,
 			WithBatchSize(1),
 		)
-		_, err := h.Write(
-			[]byte("x"),
-		)
+		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		require.NoError(
 			t,
@@ -1184,14 +1024,16 @@ func TestHandler_Close(t *testing.T) {
 			runtime.NumGoroutine(),
 			before,
 		)
-
 	})
-	t.Run("maxRetriesZero", func(t *testing.T) {
+
+}
+
+func TestHandler_deliver(t *testing.T) {
+	t.Parallel()
+	t.Run("max retries zero", func(t *testing.T) {
 		t.Parallel()
 		var attempts atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { attempts.Add(1); responseJSON(w, 503, "down") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { attempts.Add(1); responseJSON(w, 503, "down") }))
 		t.Cleanup(server.Close)
 		var waited atomic.Bool
 		h := testHandler(
@@ -1201,9 +1043,7 @@ func TestHandler_Close(t *testing.T) {
 			WithMaxRetries(0),
 			withClock(time.Now, func(context.Context, time.Duration) bool { waited.Store(true); return false }),
 		)
-		_, err := h.Write(
-			[]byte("x"),
-		)
+		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1215,20 +1055,13 @@ func TestHandler_Close(t *testing.T) {
 			t,
 			waited.Load(),
 		)
-
 	})
-}
-
-func TestHandler_deliver(t *testing.T) {
-	t.Parallel()
-	t.Run("failedResponse", func(t *testing.T) {
+	t.Run("failed response", func(t *testing.T) {
 		t.Parallel()
 		var reported atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				responseJSON(w, 200, `{"ingested":0,"failed":1,"failures":[{"error":"bad row"}]}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			responseJSON(w, 200, `{"ingested":0,"failed":1,"failures":[{"error":"bad row"}]}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1236,43 +1069,32 @@ func TestHandler_deliver(t *testing.T) {
 			WithBatchSize(1),
 			WithErrorHandler(func(error) { reported.Add(1) }),
 		)
-		_, err := h.Write(
-			[]byte("x"),
-		)
+		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
-		require.Equal(
-			t,
-			uint64(1),
-			h.Stats().Failed,
-		)
+		require.Equal(t, uint64(1), h.Stats().Failed)
 		require.EqualValues(
 			t,
 			1,
 			reported.Load(),
 		)
-
 	})
-	t.Run("redirectIsNotFollowed", func(t *testing.T) {
+	t.Run("redirect is not followed", func(t *testing.T) {
 		t.Parallel()
 		var targetCalls atomic.Int64
-		target := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				targetCalls.Add(1)
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			targetCalls.Add(1)
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(target.Close)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				http.Redirect(
-					w,
-					r,
-					target.URL,
-					http.StatusTemporaryRedirect,
-				)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(
+				w,
+				r,
+				target.URL,
+				http.StatusTemporaryRedirect,
+			)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1280,23 +1102,16 @@ func TestHandler_deliver(t *testing.T) {
 			WithBatchSize(1),
 			WithMaxRetries(0),
 		)
-		_, err := h.Write(
-			[]byte("x"),
-		)
+		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
-		require.Equal(
-			t,
-			uint64(1),
-			h.Stats().Failed,
-		)
+		require.Equal(t, uint64(1), h.Stats().Failed)
 		require.Zero(
 			t,
 			targetCalls.Load(),
 		)
-
 	})
-	t.Run("retryAfterHTTPDate", func(t *testing.T) {
+	t.Run("retry after HTTP date", func(t *testing.T) {
 		t.Parallel()
 		var attempts atomic.Int64
 		var delaysMu sync.Mutex
@@ -1311,21 +1126,19 @@ func TestHandler_deliver(t *testing.T) {
 			0,
 			time.UTC,
 		)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if attempts.Add(1) == 1 {
-					w.Header().Set(
-						"Retry-After",
-						now.Add(
-							7*time.Second,
-						).Format(http.TimeFormat),
-					)
-					responseJSON(w, 429, "limited")
-					return
-				}
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if attempts.Add(1) == 1 {
+				w.Header().Set(
+					"Retry-After",
+					now.Add(
+						7*time.Second,
+					).Format(http.TimeFormat),
+				)
+				responseJSON(w, 429, "limited")
+				return
+			}
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1340,9 +1153,7 @@ func TestHandler_deliver(t *testing.T) {
 				return true
 			}),
 		)
-		_, err := h.Write(
-			[]byte("retry"),
-		)
+		_, err := h.Write([]byte("retry"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1351,29 +1162,26 @@ func TestHandler_deliver(t *testing.T) {
 			attempts.Load(),
 		)
 		require.Equal(t, []time.Duration{7 * time.Second}, delays)
-
 	})
-	t.Run("retryAfterSeconds", func(t *testing.T) {
+	t.Run("retry after seconds", func(t *testing.T) {
 		t.Parallel()
 		var attempts atomic.Int64
 		var delay atomic.Int64
 		bodies := make(chan []byte, 2)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				if err != nil {
-					http.Error(w, "read failed", http.StatusBadRequest)
-					return
-				}
-				bodies <- body
-				if attempts.Add(1) == 1 {
-					w.Header().Set("Retry-After", "1")
-					responseJSON(w, 429, "limited")
-					return
-				}
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "read failed", http.StatusBadRequest)
+				return
+			}
+			bodies <- body
+			if attempts.Add(1) == 1 {
+				w.Header().Set("Retry-After", "1")
+				responseJSON(w, 429, "limited")
+				return
+			}
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1381,15 +1189,11 @@ func TestHandler_deliver(t *testing.T) {
 			WithBatchSize(1),
 			WithMaxRetries(1),
 			withClock(time.Now, func(_ context.Context, d time.Duration) bool {
-				delay.Store(
-					int64(d),
-				)
+				delay.Store(int64(d))
 				return true
 			}),
 		)
-		_, err := h.Write(
-			[]byte("retry"),
-		)
+		_, err := h.Write([]byte("retry"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1405,22 +1209,19 @@ func TestHandler_deliver(t *testing.T) {
 		first, second := <-bodies, <-bodies
 		require.NotEmpty(t, first)
 		require.Equal(t, first, second)
-
 	})
-	t.Run("retryAfterOverflowClampsBeforeConversion", func(t *testing.T) {
+	t.Run("retry after overflow clamps before conversion", func(t *testing.T) {
 		t.Parallel()
 		var calls atomic.Int64
 		delays := make(chan time.Duration, 1)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if calls.Add(1) == 1 {
-					w.Header().Set("Retry-After", "9223372037")
-					responseJSON(w, 429, "limited")
-					return
-				}
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if calls.Add(1) == 1 {
+				w.Header().Set("Retry-After", "9223372037")
+				responseJSON(w, 429, "limited")
+				return
+			}
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1429,9 +1230,7 @@ func TestHandler_deliver(t *testing.T) {
 			WithMaxRetries(1),
 			withClock(time.Now, func(_ context.Context, d time.Duration) bool { delays <- d; return true }),
 		)
-		_, err := h.Write(
-			[]byte("retry"),
-		)
+		_, err := h.Write([]byte("retry"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1444,21 +1243,18 @@ func TestHandler_deliver(t *testing.T) {
 			30*time.Second,
 			<-delays,
 		)
-
 	})
-	t.Run("5xxRetriesAnd400DoesNot", func(t *testing.T) {
+	t.Run("5xx retries and 400 does not", func(t *testing.T) {
 		t.Parallel()
 		var attempts atomic.Int64
 		var reports atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if attempts.Add(1) <= 3 {
-					responseJSON(w, 503, "down")
-					return
-				}
-				responseJSON(w, 400, "invalid")
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if attempts.Add(1) <= 3 {
+				responseJSON(w, 503, "down")
+				return
+			}
+			responseJSON(w, 400, "invalid")
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1468,14 +1264,10 @@ func TestHandler_deliver(t *testing.T) {
 			WithErrorHandler(func(error) { reports.Add(1) }),
 			withClock(time.Now, func(context.Context, time.Duration) bool { return true }),
 		)
-		_, err := h.Write(
-			[]byte("retry"),
-		)
+		_, err := h.Write([]byte("retry"))
 		require.NoError(t, err)
 		flushHandler(t, h)
-		_, err = h.Write(
-			[]byte("no retry"),
-		)
+		_, err = h.Write([]byte("no retry"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1483,36 +1275,29 @@ func TestHandler_deliver(t *testing.T) {
 			4,
 			attempts.Load(),
 		)
-		require.Equal(
-			t,
-			uint64(2),
-			h.Stats().Failed,
-		)
+		require.Equal(t, uint64(2), h.Stats().Failed)
 		require.EqualValues(
 			t,
 			1,
 			reports.Load(),
 		)
-
 	})
-	t.Run("retryBodyIdentical", func(t *testing.T) {
+	t.Run("retry body identical", func(t *testing.T) {
 		t.Parallel()
 		var bodiesMu sync.Mutex
 		var bodies [][]byte
 		var count atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				b, _ := io.ReadAll(r.Body)
-				bodiesMu.Lock()
-				bodies = append(bodies, b)
-				bodiesMu.Unlock()
-				if count.Add(1) == 1 {
-					responseJSON(w, 503, "retry")
-				} else {
-					responseJSON(w, 200, `{"ingested":1}`)
-				}
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			bodiesMu.Lock()
+			bodies = append(bodies, b)
+			bodiesMu.Unlock()
+			if count.Add(1) == 1 {
+				responseJSON(w, 503, "retry")
+			} else {
+				responseJSON(w, 200, `{"ingested":1}`)
+			}
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1522,9 +1307,7 @@ func TestHandler_deliver(t *testing.T) {
 			WithCompression(false),
 			withClock(time.Now, func(context.Context, time.Duration) bool { return true }),
 		)
-		_, err := h.Write(
-			[]byte("retry body"),
-		)
+		_, err := h.Write([]byte("retry body"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		bodiesMu.Lock()
@@ -1532,9 +1315,8 @@ func TestHandler_deliver(t *testing.T) {
 		require.Len(t, bodies, 2)
 		require.NotEmpty(t, bodies[0])
 		require.Equal(t, bodies[0], bodies[1])
-
 	})
-	t.Run("200IncompleteAccounting", func(t *testing.T) {
+	t.Run("200 incomplete accounting", func(t *testing.T) {
 		t.Parallel()
 		check := func(
 			t *testing.T,
@@ -1545,9 +1327,7 @@ func TestHandler_deliver(t *testing.T) {
 		) {
 			t.Helper()
 			var reported atomic.Int64
-			server := httptest.NewServer(
-				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, body) }),
-			)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, body) }))
 			t.Cleanup(server.Close)
 			h := testHandler(
 				t,
@@ -1556,9 +1336,7 @@ func TestHandler_deliver(t *testing.T) {
 				WithErrorHandler(func(error) { reported.Add(1) }),
 			)
 			for range 2 {
-				_, err := h.Write(
-					[]byte("x"),
-				)
+				_, err := h.Write([]byte("x"))
 				require.NoError(t, err)
 			}
 			flushHandler(t, h)
@@ -1606,20 +1384,20 @@ func TestHandler_deliver(t *testing.T) {
 				1,
 			)
 		})
-
 	})
-	t.Run("failureReasonCapped", func(t *testing.T) {
+	t.Run("failure reason capped", func(t *testing.T) {
 		t.Parallel()
 		t.Run("does not split a rune", func(t *testing.T) {
 			t.Parallel()
-			reason := strings.Repeat("a", errorBodyBytes-2) + "界" + strings.Repeat("b", 20)
+			reason := strings.Repeat(
+				"a",
+				errorBodyBytes-2,
+			) + "界" + strings.Repeat("b", 20)
 			body, err := json.Marshal(map[string]any{"ingested": 0, "failed": 1, "failures": []any{map[string]string{"error": reason}}})
 			require.NoError(t, err)
-			server := httptest.NewServer(
-				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					responseJSON(w, http.StatusOK, string(body))
-				}),
-			)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				responseJSON(w, http.StatusOK, string(body))
+			}))
 			t.Cleanup(server.Close)
 			reported := make(chan string, 1)
 			h := testHandler(
@@ -1633,8 +1411,13 @@ func TestHandler_deliver(t *testing.T) {
 			flushHandler(t, h)
 			select {
 			case text := <-reported:
-				require.True(t, utf8.ValidString(text))
-			case <-time.After(5 * time.Second):
+				require.True(
+					t,
+					utf8.ValidString(text),
+				)
+			case <-time.After(
+				5 * time.Second,
+			):
 				t.Fatal("error was not reported")
 			}
 		})
@@ -1644,15 +1427,9 @@ func TestHandler_deliver(t *testing.T) {
 		), make(chan string, 1)
 		body, err := json.Marshal(map[string]any{"ingested": 0, "failed": 1, "failures": []any{map[string]string{"error": reason}}})
 		require.NoError(t, err)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				responseJSON(
-					w,
-					200,
-					string(body),
-				)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			responseJSON(w, 200, string(body))
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1660,9 +1437,7 @@ func TestHandler_deliver(t *testing.T) {
 			WithBatchSize(1),
 			WithErrorHandler(func(err error) { reported <- err.Error() }),
 		)
-		_, err = h.Write(
-			[]byte("x"),
-		)
+		_, err = h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		select {
@@ -1677,9 +1452,8 @@ func TestHandler_deliver(t *testing.T) {
 		):
 			t.Fatal("error was not reported")
 		}
-
 	})
-	t.Run("failureReasonRedactsBeforeCap", func(t *testing.T) {
+	t.Run("failure reason redacts before cap", func(t *testing.T) {
 		t.Parallel()
 		token := "xaat-secret-prefix-that-must-not-leak"
 		reason := strings.Repeat(
@@ -1688,43 +1462,28 @@ func TestHandler_deliver(t *testing.T) {
 		) + token
 		body, err := json.Marshal(map[string]any{"ingested": 0, "failed": 1, "failures": []any{map[string]string{"error": reason}}})
 		require.NoError(t, err)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				responseJSON(
-					w,
-					200,
-					string(body),
-				)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			responseJSON(w, 200, string(body))
+		}))
 		t.Cleanup(server.Close)
 		reported := make(chan string, 1)
 		h, err := NewHandler(
-
 			Token(token),
-
 			"logs",
-
 			withBaseURL(server.URL),
-
 			WithBatchSize(1),
-
 			WithFlushInterval(time.Hour),
-
 			WithErrorHandler(func(err error) { reported <- err.Error() }),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = h.Close() })
-		_, err = h.Write(
-			[]byte("x"),
-		)
+		_, err = h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		got := <-reported
 		require.NotContains(t, got, token[:8])
-
 	})
-	t.Run("responseErrorRedactsBeforeCap", func(t *testing.T) {
+	t.Run("response error redacts before cap", func(t *testing.T) {
 		t.Parallel()
 		token := "xaat-secret-prefix-that-must-not-leak"
 		reason := strings.Repeat(
@@ -1732,46 +1491,32 @@ func TestHandler_deliver(t *testing.T) {
 			errorBodyBytes-12,
 		) + token
 		reported := make(chan string, 1)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				responseJSON(w, http.StatusInternalServerError, reason)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			responseJSON(w, http.StatusInternalServerError, reason)
+		}))
 		t.Cleanup(server.Close)
 		h, err := NewHandler(
-
 			Token(token),
-
 			"logs",
-
 			withBaseURL(server.URL),
-
 			WithMaxRetries(0),
-
 			WithBatchSize(1),
-
 			WithFlushInterval(time.Hour),
-
 			WithErrorHandler(func(err error) { reported <- err.Error() }),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = h.Close() })
-		_, err = h.Write(
-			[]byte("x"),
-		)
+		_, err = h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		got := <-reported
 		require.NotContains(t, got, token[:8])
-
 	})
-	t.Run("tokenNeverInErrors", func(t *testing.T) {
+	t.Run("token never in errors", func(t *testing.T) {
 		t.Parallel()
 		var errorsMu sync.Mutex
 		var messages []string
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "xaat-secret leaked?") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "xaat-secret leaked?") }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1787,22 +1532,19 @@ func TestHandler_deliver(t *testing.T) {
 				errorsMu.Unlock()
 			}),
 		)
-		_, err := h.Write(
-			[]byte("x"),
-		)
+		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		errorsMu.Lock()
 		defer errorsMu.Unlock()
 		require.Len(t, messages, 1)
 		require.NotContains(t, messages[0], "xaat-secret")
-
 	})
 }
 
 func TestHandler_reportWith(t *testing.T) {
 	t.Parallel()
-	t.Run("errorHandlerRateLimited", func(t *testing.T) {
+	t.Run("error handler rate limited", func(t *testing.T) {
 		t.Parallel()
 		var attempts, reports atomic.Int64
 		now := time.Date(
@@ -1816,9 +1558,7 @@ func TestHandler_reportWith(t *testing.T) {
 			time.UTC,
 		)
 		var clockMu sync.Mutex
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { attempts.Add(1); responseJSON(w, 400, "bad") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { attempts.Add(1); responseJSON(w, 400, "bad") }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1828,17 +1568,13 @@ func TestHandler_reportWith(t *testing.T) {
 			WithErrorHandler(func(error) { reports.Add(1) }),
 			withClock(func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }, func(context.Context, time.Duration) bool { return true }),
 		)
-		_, err := h.Write(
-			[]byte("a"),
-		)
+		_, err := h.Write([]byte("a"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		clockMu.Lock()
 		now = now.Add(time.Second)
 		clockMu.Unlock()
-		_, err = h.Write(
-			[]byte("b"),
-		)
+		_, err = h.Write([]byte("b"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		clockMu.Lock()
@@ -1846,9 +1582,7 @@ func TestHandler_reportWith(t *testing.T) {
 			30 * time.Second,
 		)
 		clockMu.Unlock()
-		_, err = h.Write(
-			[]byte("c"),
-		)
+		_, err = h.Write([]byte("c"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1861,14 +1595,11 @@ func TestHandler_reportWith(t *testing.T) {
 			2,
 			reports.Load(),
 		)
-
 	})
-	t.Run("errorHandlerPanicContinues", func(t *testing.T) {
+	t.Run("error handler panic continues", func(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests.Add(1); responseJSON(w, 400, "bad") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { requests.Add(1); responseJSON(w, 400, "bad") }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -1877,14 +1608,10 @@ func TestHandler_reportWith(t *testing.T) {
 			WithMaxRetries(0),
 			WithErrorHandler(func(error) { panic("handler") }),
 		)
-		_, err := h.Write(
-			[]byte("a"),
-		)
+		_, err := h.Write([]byte("a"))
 		require.NoError(t, err)
 		flushHandler(t, h)
-		_, err = h.Write(
-			[]byte("b"),
-		)
+		_, err = h.Write([]byte("b"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		require.EqualValues(
@@ -1892,17 +1619,14 @@ func TestHandler_reportWith(t *testing.T) {
 			2,
 			requests.Load(),
 		)
-
 	})
-	t.Run("errorHandlerPanicWritesStderr", func(t *testing.T) {
+	t.Run("error handler panic writes stderr", func(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				requests.Add(1)
-				responseJSON(w, 400, "bad")
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			responseJSON(w, 400, "bad")
+		}))
 		t.Cleanup(server.Close)
 		output := &lockedTestBuffer{}
 		h := testHandler(
@@ -1911,12 +1635,14 @@ func TestHandler_reportWith(t *testing.T) {
 			withErrorOutput(output),
 			WithBatchSize(1),
 			WithMaxRetries(0),
-			WithErrorHandler(func(error) { panic(errors.New("boom xaat-secret")) }),
+			WithErrorHandler(func(error) {
+				panic(
+					errors.New("boom xaat-secret"),
+				)
+			}),
 		)
 		for _, message := range []string{"first", "second"} {
-			_, err := h.Write(
-				[]byte(message),
-			)
+			_, err := h.Write([]byte(message))
 			require.NoError(t, err)
 			flushHandler(t, h)
 		}
@@ -1930,29 +1656,30 @@ func TestHandler_reportWith(t *testing.T) {
 			output.String(),
 			"axiom: error handler panicked: boom",
 		)
-		require.NotContains(t, output.String(), "xaat-secret")
-
+		require.NotContains(
+			t,
+			output.String(),
+			"xaat-secret",
+		)
 	})
-	t.Run("errorHandlerLogsIntoOwnLogger", func(t *testing.T) {
+	t.Run("error handler logs into own logger", func(t *testing.T) {
 		t.Parallel()
 		var requests atomic.Int64
 		events := make(chan []map[string]any, 2)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests.Add(1)
-				decoded, _, decodeErr := requestEvents(r)
-				if decodeErr != nil {
-					http.Error(
-						w,
-						decodeErr.Error(),
-						http.StatusBadRequest,
-					)
-					return
-				}
-				events <- decoded
-				responseJSON(w, 400, "bad")
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			decoded, _, decodeErr := requestEvents(r)
+			if decodeErr != nil {
+				http.Error(
+					w,
+					decodeErr.Error(),
+					http.StatusBadRequest,
+				)
+				return
+			}
+			events <- decoded
+			responseJSON(w, 400, "bad")
+		}))
 		t.Cleanup(server.Close)
 		var logger *loginjector.Logger
 		reported := make(chan struct{})
@@ -1965,19 +1692,14 @@ func TestHandler_reportWith(t *testing.T) {
 			WithMaxRetries(0),
 			WithErrorHandler(func(error) {
 				reportOnce.Do(func() {
-					logger.WriteLog(
-						1,
-						[]byte("reported"),
-					)
+					logger.WriteLog(1, []byte("reported"))
 					close(reported)
 				})
 			}),
 		)
 		require.NoError(t, err)
 		logger = loginjector.NewLogger(0, h)
-		_, err = h.Write(
-			[]byte("failure"),
-		)
+		_, err = h.Write([]byte("failure"))
 		require.NoError(t, err)
 		select {
 		case <-reported:
@@ -2013,20 +1735,13 @@ func TestHandler_reportWith(t *testing.T) {
 		require.Len(t, first, 1)
 		require.Len(t, second, 1)
 		require.Equal(t, "reported", second[0]["message"])
-		require.Equal(
-			t,
-			uint64(2),
-			h.Stats().Failed,
-		)
+		require.Equal(t, uint64(2), h.Stats().Failed)
 		require.Zero(t, h.Stats().Dropped)
-
 	})
-	t.Run("droppedRequestTextStillReportsPendingDrops", func(t *testing.T) {
+	t.Run("dropped request text still reports pending drops", func(t *testing.T) {
 		t.Parallel()
 		reported := make(chan string, 1)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "dropped request") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "dropped request") }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -2037,9 +1752,7 @@ func TestHandler_reportWith(t *testing.T) {
 			WithErrorHandler(func(err error) { reported <- err.Error() }),
 		)
 		h.dropped.Add(3)
-		_, err := h.Write(
-			[]byte("x"),
-		)
+		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
 		got := <-reported
@@ -2048,14 +1761,9 @@ func TestHandler_reportWith(t *testing.T) {
 		h.errorMu.Lock()
 		reportedDrops := h.dropReported
 		h.errorMu.Unlock()
-		require.Equal(
-			t,
-			uint64(3),
-			reportedDrops,
-		)
-
+		require.Equal(t, uint64(3), reportedDrops)
 	})
-	t.Run("dropCountsSurviveRateLimit", func(t *testing.T) {
+	t.Run("drop counts survive rate limit", func(t *testing.T) {
 		t.Parallel()
 		now := time.Date(
 			2026,
@@ -2073,21 +1781,19 @@ func TestHandler_reportWith(t *testing.T) {
 		started, release := make(chan struct{}, 1), make(chan struct{})
 		firstDone := make(chan struct{}, 1)
 		var request atomic.Int64
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if request.Add(1) == 1 {
-					responseJSON(w, 400, "initial")
-					firstDone <- struct{}{}
-					return
-				}
-				select {
-				case started <- struct{}{}:
-				default:
-				}
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if request.Add(1) == 1 {
+				responseJSON(w, 400, "initial")
+				firstDone <- struct{}{}
+				return
+			}
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -2112,9 +1818,7 @@ func TestHandler_reportWith(t *testing.T) {
 			}),
 			withClock(func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return now }, func(context.Context, time.Duration) bool { return true }),
 		)
-		_, err := h.Write(
-			[]byte("first failure"),
-		)
+		_, err := h.Write([]byte("first failure"))
 		require.NoError(t, err)
 		select {
 		case <-firstDone:
@@ -2123,9 +1827,7 @@ func TestHandler_reportWith(t *testing.T) {
 		):
 			t.Fatal("first request did not finish")
 		}
-		_, err = h.Write(
-			[]byte("blocked"),
-		)
+		_, err = h.Write([]byte("blocked"))
 		require.NoError(t, err)
 		select {
 		case <-started:
@@ -2134,31 +1836,21 @@ func TestHandler_reportWith(t *testing.T) {
 		):
 			t.Fatal("worker did not enter blocked request")
 		}
-		// The worker is blocked in request two; fill the queue and create drops at t=0.
-		_, err = h.Write(
-			[]byte("queued"),
-		)
+		// the worker is blocked in request two; fill the queue and create drops at t=0.
+		_, err = h.Write([]byte("queued"))
 		require.NoError(t, err)
 		for range 5 {
-			_, err := h.Write(
-				[]byte("drop at zero"),
-			)
+			_, err := h.Write([]byte("drop at zero"))
 			require.NoError(t, err)
 		}
-		require.GreaterOrEqual(
-			t,
-			h.Stats().Dropped,
-			uint64(1),
-		)
+		require.GreaterOrEqual(t, h.Stats().Dropped, uint64(1))
 		clockMu.Lock()
 		now = now.Add(
 			10 * time.Second,
 		)
 		clockMu.Unlock()
 		for range 5 {
-			_, err := h.Write(
-				[]byte("drop at ten"),
-			)
+			_, err := h.Write([]byte("drop at ten"))
 			require.NoError(t, err)
 		}
 		clockMu.Lock()
@@ -2184,9 +1876,8 @@ func TestHandler_reportWith(t *testing.T) {
 			reports[len(reports)-1],
 			fmt.Sprintf("dropped %d events", h.Stats().Dropped),
 		)
-
 	})
-	t.Run("dropNoticeNotCountedAsSuppressed", func(t *testing.T) {
+	t.Run("drop notice not counted as suppressed", func(t *testing.T) {
 		t.Parallel()
 		now := time.Date(
 			2026,
@@ -2199,9 +1890,7 @@ func TestHandler_reportWith(t *testing.T) {
 			time.UTC,
 		)
 		reports := make(chan string, 2)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 200, `{"ingested":1}`) }))
 		t.Cleanup(server.Close)
 		var errorCalls atomic.Int64
 		h := testHandler(
@@ -2238,24 +1927,21 @@ func TestHandler_reportWith(t *testing.T) {
 		require.Contains(t, final, "suppressed 1")
 		require.NotContains(t, final, "suppressed 2")
 		require.Contains(t, final, "axiom: dropped 2 events")
-
 	})
-	t.Run("dropReportWithoutTransportErrors", func(t *testing.T) {
+	t.Run("drop report without transport errors", func(t *testing.T) {
 		t.Parallel()
 		var reportsMu sync.Mutex
 		var reports []string
 		started, release := make(chan struct{}), make(chan struct{})
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				select {
-				case <-started:
-				default:
-					close(started)
-				}
-				<-release
-				responseJSON(w, 200, `{"ingested":1}`)
-			}),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-release
+			responseJSON(w, 200, `{"ingested":1}`)
+		}))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -2274,16 +1960,10 @@ func TestHandler_reportWith(t *testing.T) {
 				reportsMu.Unlock()
 			}),
 		)
-		_, _ = h.Write(
-			[]byte("one"),
-		)
+		_, _ = h.Write([]byte("one"))
 		<-started
-		_, _ = h.Write(
-			[]byte("two"),
-		)
-		_, _ = h.Write(
-			[]byte("overflow"),
-		)
+		_, _ = h.Write([]byte("two"))
+		_, _ = h.Write([]byte("overflow"))
 		close(release)
 		deadline := time.Now().Add(
 			5 * time.Second,
@@ -2308,9 +1988,8 @@ func TestHandler_reportWith(t *testing.T) {
 			strings.Join(reports, " "),
 			"axiom: dropped",
 		)
-
 	})
-	t.Run("rateLimiterClock", func(t *testing.T) {
+	t.Run("rate limiter clock", func(t *testing.T) {
 		t.Parallel()
 		var reportsMu sync.Mutex
 		var reports []string
@@ -2325,9 +2004,7 @@ func TestHandler_reportWith(t *testing.T) {
 			0,
 			time.UTC,
 		)
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "bad") }),
-		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { responseJSON(w, 400, "bad") }))
 		t.Cleanup(server.Close)
 		h := testHandler(
 			t,
@@ -2348,9 +2025,7 @@ func TestHandler_reportWith(t *testing.T) {
 			nowMu.Lock()
 			now = now.Add(advance)
 			nowMu.Unlock()
-			_, err := h.Write(
-				[]byte("x"),
-			)
+			_, err := h.Write([]byte("x"))
 			require.NoError(t, err)
 			flushHandler(t, h)
 		}
@@ -2358,7 +2033,6 @@ func TestHandler_reportWith(t *testing.T) {
 		defer reportsMu.Unlock()
 		require.Len(t, reports, 2)
 		require.Contains(t, reports[1], "suppressed 1")
-
 	})
 }
 
@@ -2376,7 +2050,12 @@ func BenchmarkCompressPayload(b *testing.B) {
 			b.Errorf("close handler: %v", err)
 		}
 	})
-	ev := newEvent(time.Now(), 4, true, []byte(fmt.Sprintf("%0120s", "event message")))
+	ev := newEvent(
+		time.Now(),
+		4,
+		true,
+		[]byte(fmt.Sprintf("%0120s", "event message")),
+	)
 	var payload bytes.Buffer
 	for range 1000 {
 		line, err := h.appendEvent(nil, ev)
@@ -2386,11 +2065,7 @@ func BenchmarkCompressPayload(b *testing.B) {
 		payload.Write(line)
 	}
 	b.ReportAllocs()
-	b.SetBytes(
-		int64(
-			payload.Len(),
-		),
-	)
+	b.SetBytes(int64(payload.Len()))
 	b.ResetTimer()
 	for range b.N {
 		if _, err := h.compressPayload(
@@ -2431,9 +2106,7 @@ func requestEvents(r *http.Request) ([]map[string]any, []byte, error) {
 	payload := body
 	if r.Header.Get("Content-Encoding") == "gzip" {
 		zr, err := gzip.NewReader(
-			strings.NewReader(
-				string(body),
-			),
+			strings.NewReader(string(body)),
 		)
 		if err != nil {
 			return nil, body, err
@@ -2449,9 +2122,7 @@ func requestEvents(r *http.Request) ([]map[string]any, []byte, error) {
 	}
 	var events []map[string]any
 	for _, line := range strings.Split(
-		strings.TrimSpace(
-			string(payload),
-		),
+		strings.TrimSpace(string(payload)),
 		"\n",
 	) {
 		if line == "" {

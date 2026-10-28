@@ -294,34 +294,59 @@ func Test_newEvent(t *testing.T) {
 
 func TestHandler_Format(t *testing.T) {
 	t.Parallel()
-	check := func(t *testing.T, value bool) {
+	check := func(t *testing.T, formatted string) {
 		t.Helper()
-		h, err := NewHandler("xaat-super-secret-token", "logs")
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = h.Close() })
-		if value {
-			require.NoError(t, h.Close())
-			for _, verb := range []string{"%+v", "%#v"} {
-				formatted := fmt.Sprintf(
-					verb,
-					reflect.ValueOf(h).Elem().Interface(),
-				)
-				require.NotContains(t, formatted, "xaat-super-secret-token")
-			}
-			return
-		}
-		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
-			formatted := fmt.Sprintf(verb, h)
-			require.NotContains(t, formatted, "xaat-super-secret-token")
-		}
+		require.NotContains(t, formatted, "xaat-super-secret-token")
 	}
-	t.Run("pointer formats do not expose token", func(t *testing.T) {
+	h, err := NewHandler("xaat-super-secret-token", "logs")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	t.Run("pointer %v", func(t *testing.T) {
 		t.Parallel()
-		check(t, false)
+		check(
+			t,
+			fmt.Sprintf("%v", h),
+		)
 	})
-	t.Run("value formats do not expose token", func(t *testing.T) {
+	t.Run("pointer %+v", func(t *testing.T) {
 		t.Parallel()
-		check(t, true)
+		check(
+			t,
+			fmt.Sprintf("%+v", h),
+		)
+	})
+	t.Run("pointer %#v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%#v", h),
+		)
+	})
+	t.Run("pointer %s", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%s", h),
+		)
+	})
+	require.NoError(
+		t,
+		h.Close(),
+	)
+	value := reflect.ValueOf(h).Elem().Interface()
+	t.Run("value %+v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%+v", value),
+		)
+	})
+	t.Run("value %#v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%#v", value),
+		)
 	})
 }
 
@@ -333,13 +358,21 @@ func TestHandler_WriteLevel(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			events, _, err := requestEvents(r)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				http.Error(
+					w,
+					err.Error(),
+					http.StatusBadRequest,
+				)
 				return
 			}
 			got <- events
 			responseJSON(w, http.StatusOK, `{"ingested":1}`)
 		}))
-		h := testHandler(t, server, WithFlushInterval(time.Hour))
+		h := testHandler(
+			t,
+			server,
+			WithFlushInterval(time.Hour),
+		)
 		_, err := h.WriteLevel(4, []byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
@@ -353,13 +386,21 @@ func TestHandler_WriteLevel(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			events, _, err := requestEvents(r)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				http.Error(
+					w,
+					err.Error(),
+					http.StatusBadRequest,
+				)
 				return
 			}
 			got <- events
 			responseJSON(w, http.StatusOK, `{"ingested":1}`)
 		}))
-		h := testHandler(t, server, WithFlushInterval(time.Hour))
+		h := testHandler(
+			t,
+			server,
+			WithFlushInterval(time.Hour),
+		)
 		_, err := h.Write([]byte("x"))
 		require.NoError(t, err)
 		flushHandler(t, h)
@@ -425,11 +466,7 @@ func TestHandler_appendEvent(t *testing.T) {
 		)
 		require.Equal(t, "hello", fields["message"])
 		require.Equal(t, "2026-10-22T01:02:03.000000004Z", fields["_time"])
-		require.Equal(
-			t,
-			"\n",
-			string(dst[len(dst)-1]),
-		)
+		require.Equal(t, "\n", string(dst[len(dst)-1]))
 	})
 	t.Run("level absent", func(t *testing.T) {
 		t.Parallel()
@@ -602,41 +639,36 @@ func TestHandler_appendEvent(t *testing.T) {
 		)
 		require.Equal(t, true, fields["message_truncated"])
 	})
-}
-
-func TestHandler_appendEventDoesNotHTMLEscape(t *testing.T) {
-	t.Parallel()
-	h, err := NewHandler(
-		"xaat-secret",
-		"logs",
-		WithCompression(false),
-	)
-	require.NoError(t, err)
-	defer h.Close()
-	line, err := h.appendEvent(
-		nil,
-		newEvent(
-			time.Now(),
-			0,
-			false,
-			[]byte("<tag>&"),
-		),
-	)
-	require.NoError(t, err)
-	require.Contains(
-		t,
-		string(line),
-		`"<tag>&"`,
-	)
-	var got map[string]any
-	require.NoError(
-		t,
-		json.Unmarshal(
-			bytes.TrimSpace(line),
-			&got,
-		),
-	)
-	require.Equal(t, "<tag>&", got["message"])
+	t.Run("does not HTML-escape", func(t *testing.T) {
+		t.Parallel()
+		h, err := NewHandler(
+			"xaat-secret",
+			"logs",
+			WithCompression(false),
+		)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = h.Close() })
+		line, err := h.appendEvent(
+			nil,
+			newEvent(
+				time.Now(),
+				0,
+				false,
+				[]byte("<tag>&"),
+			),
+		)
+		require.NoError(t, err)
+		require.Contains(t, string(line), `"<tag>&"`)
+		var got map[string]any
+		require.NoError(
+			t,
+			json.Unmarshal(
+				bytes.TrimSpace(line),
+				&got,
+			),
+		)
+		require.Equal(t, "<tag>&", got["message"])
+	})
 }
 
 func BenchmarkAppendEvent(b *testing.B) {
