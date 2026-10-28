@@ -1039,6 +1039,17 @@ func TestHandler_reportWith(t *testing.T) {
 	})
 }
 
+func Test_resetBatch(t *testing.T) {
+	t.Parallel()
+	batch := []queuedEvent{{line: []byte("large")}, {line: []byte("batch")}}
+	backing := batch[:cap(batch)]
+	reset := resetBatch(batch)
+	require.Empty(t, reset)
+	for _, item := range backing {
+		require.Nil(t, item.line)
+	}
+}
+
 func BenchmarkCompressPayload(b *testing.B) {
 	h, err := NewHandler(
 		"xaat-secret",

@@ -166,6 +166,64 @@ func TestNewHandler(t *testing.T) {
 	})
 }
 
+func TestHandler_Format(t *testing.T) {
+	t.Parallel()
+	check := func(t *testing.T, formatted string) {
+		t.Helper()
+		require.NotContains(t, formatted, "xaat-super-secret-token")
+	}
+	h, err := NewHandler("xaat-super-secret-token", "logs")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = h.Close() })
+	t.Run("pointer %v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%v", h),
+		)
+	})
+	t.Run("pointer %+v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%+v", h),
+		)
+	})
+	t.Run("pointer %#v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%#v", h),
+		)
+	})
+	t.Run("pointer %s", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%s", h),
+		)
+	})
+	require.NoError(
+		t,
+		h.Close(),
+	)
+	value := reflect.ValueOf(h).Elem().Interface()
+	t.Run("value %+v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%+v", value),
+		)
+	})
+	t.Run("value %#v", func(t *testing.T) {
+		t.Parallel()
+		check(
+			t,
+			fmt.Sprintf("%#v", value),
+		)
+	})
+}
+
 func TestHandler_Write(t *testing.T) {
 	t.Parallel()
 	t.Run("exactly full batch sends without flush", func(t *testing.T) {
@@ -1195,75 +1253,6 @@ func TestHandler_Close(t *testing.T) {
 			before,
 		)
 	})
-}
-
-func TestHandler_Format(t *testing.T) {
-	t.Parallel()
-	check := func(t *testing.T, formatted string) {
-		t.Helper()
-		require.NotContains(t, formatted, "xaat-super-secret-token")
-	}
-	h, err := NewHandler("xaat-super-secret-token", "logs")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = h.Close() })
-	t.Run("pointer %v", func(t *testing.T) {
-		t.Parallel()
-		check(
-			t,
-			fmt.Sprintf("%v", h),
-		)
-	})
-	t.Run("pointer %+v", func(t *testing.T) {
-		t.Parallel()
-		check(
-			t,
-			fmt.Sprintf("%+v", h),
-		)
-	})
-	t.Run("pointer %#v", func(t *testing.T) {
-		t.Parallel()
-		check(
-			t,
-			fmt.Sprintf("%#v", h),
-		)
-	})
-	t.Run("pointer %s", func(t *testing.T) {
-		t.Parallel()
-		check(
-			t,
-			fmt.Sprintf("%s", h),
-		)
-	})
-	require.NoError(
-		t,
-		h.Close(),
-	)
-	value := reflect.ValueOf(h).Elem().Interface()
-	t.Run("value %+v", func(t *testing.T) {
-		t.Parallel()
-		check(
-			t,
-			fmt.Sprintf("%+v", value),
-		)
-	})
-	t.Run("value %#v", func(t *testing.T) {
-		t.Parallel()
-		check(
-			t,
-			fmt.Sprintf("%#v", value),
-		)
-	})
-}
-
-func Test_resetBatch(t *testing.T) {
-	t.Parallel()
-	batch := []queuedEvent{{line: []byte("large")}, {line: []byte("batch")}}
-	backing := batch[:cap(batch)]
-	reset := resetBatch(batch)
-	require.Empty(t, reset)
-	for _, item := range backing {
-		require.Nil(t, item.line)
-	}
 }
 
 func TestHandler_appendEvent(t *testing.T) {

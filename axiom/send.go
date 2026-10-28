@@ -380,11 +380,6 @@ func (h *Handler) emit(err error, dropDelta uint64) {
 	}
 }
 
-func resetBatch(batch []queuedEvent) []queuedEvent {
-	clear(batch)
-	return batch[:0]
-}
-
 func (h *Handler) reportSuppressed() {
 	h.errorMu.Lock()
 	suppressed := h.suppressed
@@ -527,4 +522,9 @@ func waitRetry(ctx context.Context, delay time.Duration) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func resetBatch(batch []queuedEvent) []queuedEvent {
+	clear(batch)
+	return batch[:0]
 }
