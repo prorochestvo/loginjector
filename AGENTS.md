@@ -64,13 +64,18 @@ before starting non-trivial work. Project delta:
 
 - **Gate:** `make verify`.
 - **Review focus:** standard staged set — see `pipeline:working-agreement`.
-- **Branching:** `type/<issue>-<slug>`, PR into `main`, squash-merged; CI must be green.
+- **Branching:** `dev` is the integration branch: `type/<issue>-<slug>` → PR into `dev`,
+  squash-merged, CI green. `main` holds released code only and is never committed to
+  directly.
 
 ## Release and CHANGELOG
 
-- A branch lands as one squash commit and gets one version section: collect entries
-  under `[Unreleased]`, promote to `[X.Y.Z] - YYYY-MM-DD` on release, add its compare link,
-  and move `[Unreleased]`'s link base to the new tag.
+- A branch lands in `dev` as one squash commit and adds its entries under `[Unreleased]`.
+- A release is a PR into `dev` that promotes `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, adds
+  its compare link, and moves `[Unreleased]`'s link base to the new tag. After it merges,
+  `main` is fast-forwarded to `dev` (`git push origin origin/dev:main`; never a squash or
+  merge commit, which would make the branches diverge) and the tag goes on that commit.
+  Moving `main` and tagging are the owner's steps.
 - The 1.0.x line is pre-stable: next version = latest tag
   (`git tag --sort=-version:refname | head -1`) + PATCH, regardless of `Added` or
   breaking entries; breaking changes are documented in the version's
