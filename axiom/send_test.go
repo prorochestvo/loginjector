@@ -372,7 +372,10 @@ func TestHandler_deliver(t *testing.T) {
 	})
 	t.Run("response error does not split a rune", func(t *testing.T) {
 		t.Parallel()
-		body := strings.Repeat("a", errorBodyBytes-2) + "界" + strings.Repeat("b", 20)
+		body := strings.Repeat(
+			"a",
+			errorBodyBytes-2,
+		) + "界" + strings.Repeat("b", 20)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			responseJSON(w, http.StatusBadRequest, body)
 		}))
