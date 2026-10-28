@@ -49,7 +49,7 @@ func (h *Handler) run(ctx context.Context) {
 					len(batch),
 				),
 			)
-			batch = batch[:0]
+			batch = resetBatch(batch)
 			encoded.Reset()
 			return
 		}
@@ -59,7 +59,7 @@ func (h *Handler) run(ctx context.Context) {
 			len(batch),
 		)
 		h.release(batch)
-		batch = batch[:0]
+		batch = resetBatch(batch)
 		encoded.Reset()
 	}
 	add := func(item queuedEvent) {
@@ -318,7 +318,7 @@ func (h *Handler) accountResponse(result ingestResponse, count int) {
 		if len(result.Failures) > 0 && result.Failures[0].Error != "" {
 			reason = h.redact(result.Failures[0].Error)
 			if len(reason) > errorBodyBytes {
-				reason = reason[:errorBodyBytes]
+				reason = strings.ToValidUTF8(reason[:errorBodyBytes], "")
 			}
 		}
 		failedErr = fmt.Errorf("axiom: %d events failed: %s", result.Failed, reason)
@@ -365,9 +365,9 @@ func (h *Handler) pendingDrops() uint64 {
 	return h.dropped.Load() - h.dropReported
 }
 
-func (h *Handler) reportWith(err error, dropDelta uint64) bool {
+func (h *Handler) reportWith(err error, dropDelta uint64) {
 	if err == nil && dropDelta == 0 {
-		return false
+		return
 	}
 	now := h.cfg.now()
 	h.errorMu.Lock()
@@ -376,19 +376,19 @@ func (h *Handler) reportWith(err error, dropDelta uint64) bool {
 			h.suppressed++
 		}
 		h.errorMu.Unlock()
-		return false
+		return
 	}
 	suppressed := h.suppressed
 	h.suppressed = 0
 	h.lastError = now
 	h.errorMu.Unlock()
-	err = summaryError(err, suppressed, dropDelta)
-	return h.emit(err, dropDelta)
+	err = summaryError(err, summary{suppressed: suppressed, drops: dropDelta})
+	h.emit(err, dropDelta)
 }
 
-func (h *Handler) emit(err error, dropDelta uint64) bool {
+func (h *Handler) emit(err error, dropDelta uint64) {
 	if err == nil {
-		return false
+		return
 	}
 	err = errors.New(
 		h.redact(
@@ -399,7 +399,8 @@ func (h *Handler) emit(err error, dropDelta uint64) bool {
 	func() {
 		defer func() {
 			if v := recover(); v != nil {
-				_, _ = fmt.Fprintf(h.cfg.errorOutput, "axiom: error handler panicked: %v\n", v)
+				notice := fmt.Sprintf("axiom: error handler panicked: %v\n", v)
+				_, _ = io.WriteString(h.cfg.errorOutput, h.redact(notice))
 			}
 		}()
 		h.cfg.errorHandler(err)
@@ -410,7 +411,11 @@ func (h *Handler) emit(err error, dropDelta uint64) bool {
 		h.dropReported += dropDelta
 		h.errorMu.Unlock()
 	}
-	return called
+}
+
+func resetBatch(batch []queuedEvent) []queuedEvent {
+	clear(batch)
+	return batch[:0]
 }
 
 func (h *Handler) reportSuppressed() {
@@ -423,7 +428,7 @@ func (h *Handler) reportSuppressed() {
 		return
 	}
 	h.emit(
-		summaryError(nil, suppressed, dropDelta),
+		summaryError(nil, summary{suppressed: suppressed, drops: dropDelta}),
 		dropDelta,
 	)
 }
@@ -449,7 +454,7 @@ func (h *Handler) responseError(status int, body []byte) error {
 		),
 	)
 	if len(body) > errorBodyBytes {
-		body = body[:errorBodyBytes]
+		body = []byte(strings.ToValidUTF8(string(body[:errorBodyBytes]), ""))
 	}
 	message := strings.TrimSpace(
 		string(body),
@@ -479,23 +484,28 @@ type ingestResponse struct {
 	} `json:"failures"`
 }
 
-func summaryError(err error, suppressed, dropDelta uint64) error {
+type summary struct {
+	suppressed uint64
+	drops      uint64
+}
+
+func summaryError(err error, s summary) error {
 	message := ""
 	if err != nil {
 		message = err.Error()
 	}
-	if suppressed > 0 {
+	if s.suppressed > 0 {
 		if message == "" {
-			message = fmt.Sprintf("axiom: suppressed %d additional errors", suppressed)
+			message = fmt.Sprintf("axiom: suppressed %d additional errors", s.suppressed)
 		} else {
-			message += fmt.Sprintf(" (suppressed %d additional errors)", suppressed)
+			message += fmt.Sprintf(" (suppressed %d additional errors)", s.suppressed)
 		}
 	}
-	if dropDelta > 0 {
+	if s.drops > 0 {
 		if message == "" {
-			message = fmt.Sprintf("axiom: dropped %d events", dropDelta)
+			message = fmt.Sprintf("axiom: dropped %d events", s.drops)
 		} else {
-			message += fmt.Sprintf(" (axiom: dropped %d events)", dropDelta)
+			message += fmt.Sprintf(" (axiom: dropped %d events)", s.drops)
 		}
 	}
 	return errors.New(message)

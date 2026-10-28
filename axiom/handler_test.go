@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -298,6 +300,7 @@ func TestHandler_Format(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = h.Close() })
 		if value {
+			require.NoError(t, h.Close())
 			for _, verb := range []string{"%+v", "%#v"} {
 				formatted := fmt.Sprintf(
 					verb,
@@ -320,6 +323,63 @@ func TestHandler_Format(t *testing.T) {
 		t.Parallel()
 		check(t, true)
 	})
+}
+
+func TestHandler_WriteLevel(t *testing.T) {
+	t.Parallel()
+	t.Run("level is included", func(t *testing.T) {
+		t.Parallel()
+		got := make(chan []map[string]any, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			got <- events
+			responseJSON(w, http.StatusOK, `{"ingested":1}`)
+		}))
+		h := testHandler(t, server, WithFlushInterval(time.Hour))
+		_, err := h.WriteLevel(4, []byte("x"))
+		require.NoError(t, err)
+		flushHandler(t, h)
+		event := (<-got)[0]
+		require.Equal(t, "error", event["level"])
+		require.EqualValues(t, 4, event["level_num"])
+	})
+	t.Run("plain write omits level", func(t *testing.T) {
+		t.Parallel()
+		got := make(chan []map[string]any, 1)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			events, _, err := requestEvents(r)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			got <- events
+			responseJSON(w, http.StatusOK, `{"ingested":1}`)
+		}))
+		h := testHandler(t, server, WithFlushInterval(time.Hour))
+		_, err := h.Write([]byte("x"))
+		require.NoError(t, err)
+		flushHandler(t, h)
+		event := (<-got)[0]
+		_, hasLevel := event["level"]
+		_, hasLevelNum := event["level_num"]
+		require.False(t, hasLevel)
+		require.False(t, hasLevelNum)
+	})
+}
+
+func Test_resetBatch(t *testing.T) {
+	t.Parallel()
+	batch := []queuedEvent{{line: []byte("large")}, {line: []byte("batch")}}
+	backing := batch[:cap(batch)]
+	reset := resetBatch(batch)
+	require.Empty(t, reset)
+	for _, item := range backing {
+		require.Nil(t, item.line)
+	}
 }
 
 func TestHandler_appendEvent(t *testing.T) {
