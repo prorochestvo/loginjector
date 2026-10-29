@@ -180,6 +180,13 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 	}
 }
 
+// defaultMaxBody is the default per-request body-capture cap (64 KiB). It bounds
+// the memory a debug handler buffers per request; a larger body is truncated in
+// the log while the downstream handler/client still receives it in full. Pass
+// WithMaxRequestBody(-1) / WithMaxResponseBody(-1) to opt back into unlimited
+// capture.
+const defaultMaxBody = 64 << 10 // 65536
+
 // payloadConfig holds all tunables for NewPayloadHandlerWithOptions.
 type payloadConfig struct {
 	// maxRequestBody and maxResponseBody: <0 = unlimited, 0 = omit, >0 = cap at N bytes.
@@ -196,13 +203,6 @@ type payloadConfig struct {
 	// for this handler only.
 	summaryWriter io.Writer
 }
-
-// defaultMaxBody is the default per-request body-capture cap (64 KiB). It bounds
-// the memory a debug handler buffers per request; a larger body is truncated in
-// the log while the downstream handler/client still receives it in full. Pass
-// WithMaxRequestBody(-1) / WithMaxResponseBody(-1) to opt back into unlimited
-// capture.
-const defaultMaxBody = 64 << 10 // 65536
 
 // defaultPayloadConfig returns the baseline config: 64 KiB body-capture cap,
 // fixed redaction sets, os.Stdout summary.

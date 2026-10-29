@@ -1,14 +1,10 @@
 package extensions
 
 import (
-	"bytes"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestHeaderToStringWithRedact(t *testing.T) {
@@ -146,33 +142,5 @@ func TestRedactRawQuery(t *testing.T) {
 		// to the raw name; lowercasing "a%ZZbad" gives "a%zzbad" which matches
 		assert.Contains(t, redacted, "a%ZZbad=[REDACTED]")
 		assert.NotContains(t, redacted, "secret")
-	})
-}
-
-func TestNewPayloadHandlerWithOptions_HeaderRedaction(t *testing.T) {
-	t.Parallel()
-
-	t.Run("response_header_set_directly_in_map_is_redacted", func(t *testing.T) {
-		t.Parallel()
-
-		b := bytes.NewBufferString("")
-		l := loginjector.NewLogger(logLevelInfo, b)
-
-		token := uniqueToken()
-		req := httptest.NewRequest(http.MethodGet, "/test", bytes.NewBufferString(""))
-		res := httptest.NewRecorder()
-
-		nextFunc := func(w http.ResponseWriter, r *http.Request) {
-			defer func() { _ = r.Body.Close() }()
-			w.Header()["set-cookie"] = []string{"session=" + token}
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("body"))
-		}
-
-		h := NewPayloadHandler(l, logLevelInfo, nextFunc)
-		h(res, req)
-
-		require.Equal(t, http.StatusOK, res.Code)
-		assert.NotContains(t, b.String(), token, "set-cookie token should be redacted")
 	})
 }

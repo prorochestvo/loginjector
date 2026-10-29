@@ -20,15 +20,6 @@ import (
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
 var _ httpx.Tap = (*recoverResponseWriter)(nil)
 
-// newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
-func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	lw := &lockedWriter{w: buf}
-	l := loginjector.NewLogger(logLevelInfo, lw)
-	return l, buf
-}
-
 // TestNewRecoverHandler covers all NewRecoverHandler scenarios.
 func TestNewRecoverHandler(t *testing.T) {
 	t.Parallel()
@@ -761,4 +752,13 @@ func TestNewRecoverHandler(t *testing.T) {
 		require.Equal(t, "partial", fw.Body.String())
 		require.Contains(t, logBuf.String(), "panic:")
 	})
+}
+
+// newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
+func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	lw := &lockedWriter{w: buf}
+	l := loginjector.NewLogger(logLevelInfo, lw)
+	return l, buf
 }
