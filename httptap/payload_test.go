@@ -7,13 +7,16 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
-	"github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 func TestNewPayloadHandler(t *testing.T) {
@@ -743,4 +746,27 @@ func ExampleNewPayloadHandlerWithOptions() {
 		WithSummaryWriter(io.Discard), // silence per-request summary line
 	)
 	// Use the returned handler with http.Handle or your router.
+}
+
+// tokenSeq backs uniqueToken.
+var tokenSeq atomic.Uint64
+
+// uniqueToken returns a short, process-unique string. Tests use it wherever they
+// only need a distinct marker to search for in captured log output; it replaces
+// the previous uuid-based random tokens without pulling in an external dependency.
+func uniqueToken() string {
+	return "tok-" + strconv.FormatUint(tokenSeq.Add(1), 10)
+}
+
+// safeBuffer is a thread-safe bytes.Buffer for the race-condition test.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (s *safeBuffer) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buf = append(s.buf, b...)
+	return len(b), nil
 }

@@ -25,9 +25,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	_ io.Writer = (*probe)(nil)
-)
+func TestWithMaxAgeDays(t *testing.T) {
+	t.Parallel()
+	t.Run("resolves to the same maxAge as the equivalent WithMaxAge", func(t *testing.T) {
+		t.Parallel()
+
+		var got, want rotatingFileConfig
+		WithMaxAgeDays(14)(&got)
+		WithMaxAge(14 * 24 * time.Hour)(&want)
+		require.Equal(t, want.maxAge, got.maxAge,
+			"WithMaxAgeDays(14) must equal WithMaxAge(14 days)")
+	})
+
+	t.Run("zero disables age pruning", func(t *testing.T) {
+		t.Parallel()
+
+		var cfg rotatingFileConfig
+		WithMaxAgeDays(0)(&cfg)
+		require.LessOrEqual(t, cfg.maxAge, time.Duration(0),
+			"WithMaxAgeDays(0) must delegate to the zero-disables path")
+	})
+
+	t.Run("day bound prunes a backup older than it, keeps a fresh one", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		touchOld(t, filepath.Join(dir, idxName("app", 1)), "o1\n", 48*time.Hour) // older than 1 day
+		touchOld(t, filepath.Join(dir, idxName("app", 2)), "f2\n", 0)            // fresh
+
+		var cfg rotatingFileConfig
+		cfg.maxFiles = 100
+		WithMaxAgeDays(1)(&cfg)
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 3), 0, time.Now()))
+
+		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)),
+			"the 48h-old backup must be pruned under a 1-day age bound")
+		require.FileExists(t, filepath.Join(dir, idxName("app", 2)),
+			"a fresh backup must survive the 1-day age bound")
+	})
+}
 
 func TestRotatingFileHandler(t *testing.T) {
 	t.Parallel()
@@ -410,6 +446,605 @@ func TestRotatingFileHandlerForRaceCondition(t *testing.T) {
 	}
 }
 
+func TestRotatingFileHandler_FreshStartForRaceCondition(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// construct once — single truncation before any goroutine starts.
+	h := RotatingFileHandler(dir, "race", WithMaxFileSize(70), WithMaxFiles(10), WithFreshStart())
+
+	messages := make([]string, 0, 16)
+	for i := range 16 {
+		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
+	}
+
+	var mu sync.Mutex
+	var writeErr error
+	wg := sync.WaitGroup{}
+	for _, m := range messages {
+		wg.Add(1)
+		go func(wg *sync.WaitGroup, w io.Writer, txt string) {
+			defer wg.Done()
+			if _, e := w.Write([]byte(txt)); e != nil {
+				mu.Lock()
+				writeErr = errors.Join(writeErr, e)
+				mu.Unlock()
+			}
+		}(&wg, h, m)
+	}
+	wg.Wait()
+	require.NoError(t, writeErr)
+
+	files, err := extractFilesOrFail(dir)
+	require.NoError(t, err)
+
+	var sb strings.Builder
+	for f, ctx := range files {
+		fmt.Fprintf(&sb, "\n%s:\n%s\n", f, ctx)
+	}
+	allContent := strings.TrimSpace(sb.String())
+
+	for _, m := range messages {
+		if !strings.Contains(allContent, m) {
+			assert.Containsf(t, allContent, m, "message not found in logs: %s", m)
+		}
+	}
+}
+
+func TestRotatingFileHandler_StableCurrentName(t *testing.T) {
+	t.Parallel()
+	t.Run("live path fixed while indexed backups accumulate", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "access", WithMaxFileSize(10), WithMaxFiles(20), WithStableCurrentName())
+
+		writeRotating(t, h, "aaaaa") // access.log now holds "aaaaa\n" (6 bytes)
+		writeRotating(t, h, "bbbbb") // 12 bytes exceeds 10-byte limit, rotates to access.00000001.log
+		writeRotating(t, h, "ccccc") // access.log now holds "ccccc\n"
+		writeRotating(t, h, "ddddd") // 12 > 10 -> rotate to access.00000002.log
+		writeRotating(t, h, "eeeee") // access.log = "eeeee\n" (still fits)
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Equal(t, "eeeee\n", files["access.log"], "the live file must stay at the fixed prefix.log path")
+		require.Equal(t, "aaaaa\nbbbbb\n", files[idxName("access", 1)])
+		require.Equal(t, "ccccc\nddddd\n", files[idxName("access", 2)])
+		require.NotContains(t, files, idxName("access", 3), "no backup is created for the current live slot")
+	})
+
+	t.Run("maxFiles one preserves the triggering stable backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "access", WithMaxFiles(1), WithMaxFileSize(3), WithStableCurrentName())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("access", 1))
+		require.FileExists(t, backup)
+		contents, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		require.Equal(t, "abcd\n", string(contents))
+	})
+	t.Run("rotation past a planted backup protects the renamed slot", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "access", WithStableCurrentName(), WithMaxFiles(1), WithMaxFileSize(3))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("planted\n"), defaultFilePermissions))
+
+		writeRotating(t, h, "abcd")
+
+		contents, err := os.ReadFile(filepath.Join(dir, idxName("access", 2)))
+		require.NoError(t, err)
+		require.Equal(t, "abcd\n", string(contents))
+	})
+
+	t.Run("resume seeds size from prefix.log; next index is max+1", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		// a prior run left a backup at index 5 and a live file near the cap.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 5)), []byte("bck"), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "access.log"), bytes.Repeat([]byte("x"), 95), defaultFilePermissions))
+
+		h := RotatingFileHandler(dir, "access", WithMaxFileSize(100), WithMaxFiles(50), WithStableCurrentName())
+
+		// 95 + "0123456789\n" (11) = 106 > 100 -> rotate. Seeded from the 3-byte backup it
+		// would be 3+11=14 and never rotate: reaching index 6 proves the live seed.
+		writeRotating(t, h, "0123456789")
+		writeRotating(t, h, "next")
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Contains(t, files, idxName("access", 6), "next backup index must be highest(5)+1")
+		require.Equal(t, "bck", files[idxName("access", 5)], "the pre-existing backup must be untouched")
+		require.Equal(t, "next\n", files["access.log"], "the fresh live file holds the post-rotation write")
+	})
+
+	t.Run("rotation past a pre-existing index does not clobber", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("b1\n"), defaultFilePermissions))
+
+		h := RotatingFileHandler(dir, "access", WithMaxFileSize(5), WithMaxFiles(50), WithStableCurrentName())
+		// resume set index=2; plant a file at that exact slot before the first rotation.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 2)), []byte("PLANTED\n"), defaultFilePermissions))
+
+		writeRotating(t, h, "aaaaa") // 6 > 5 -> rotate; collision guard must skip index 2
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Equal(t, "PLANTED\n", files[idxName("access", 2)], "the pre-existing backup must not be clobbered")
+		require.Equal(t, "aaaaa\n", files[idxName("access", 3)], "rotation must advance to the next free slot")
+	})
+
+	t.Run("small maxFiles over many rotations keeps prefix.log", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "access", WithMaxFileSize(5), WithMaxFiles(2), WithStableCurrentName())
+
+		for range 10 {
+			writeRotating(t, h, "abcde") // 6 > 5 -> rotate on every write
+		}
+		writeRotating(t, h, "z") // fits (2 bytes) -> leaves a live prefix.log present
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Contains(t, files, "access.log", "the live file must survive aggressive pruning")
+		require.Equal(t, "z\n", files["access.log"])
+		require.LessOrEqual(t, len(files), 2, "total files must stay within maxFiles (live + maxFiles-1 backups)")
+	})
+
+	t.Run("off then on adopts legacy backups as backups", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("legacy1\n"), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 2)), []byte("legacy2\n"), defaultFilePermissions))
+
+		h := RotatingFileHandler(dir, "access", WithMaxFileSize(1000), WithMaxFiles(50), WithStableCurrentName())
+		writeRotating(t, h, "fresh")
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Equal(t, "fresh\n", files["access.log"], "the live target must be prefix.log, never a legacy backup")
+		require.Equal(t, "legacy1\n", files[idxName("access", 1)], "legacy backups are adopted untouched")
+		require.Equal(t, "legacy2\n", files[idxName("access", 2)])
+	})
+
+	t.Run("on then off leaves a stale prefix.log in place", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		// a prior stable run left prefix.log plus an indexed backup.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "access.log"), []byte("stale-live\n"), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 3)), []byte("b3\n"), defaultFilePermissions))
+
+		// indexed mode (no stable option): resume at the highest index and append there.
+		h := RotatingFileHandler(dir, "access", WithMaxFileSize(1000), WithMaxFiles(50))
+		writeRotating(t, h, "indexed-write")
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Contains(t, files[idxName("access", 3)], "indexed-write", "indexed mode resumes on the indexed backup")
+		require.Equal(t, "stale-live\n", files["access.log"], "a stale prefix.log survives and must be drained manually")
+	})
+}
+
+func TestRotatingFileHandler_MaxAge(t *testing.T) {
+	t.Parallel()
+	t.Run("backdated backups pruned on rotation, fresh kept", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(100), WithMaxAge(time.Hour))
+
+		writeRotating(t, h, "aaaaa") // -> app.00000001.log
+		writeRotating(t, h, "bbbbb") // -> app.00000002.log
+		writeRotating(t, h, "ccccc") // -> app.00000003.log (index now 4)
+
+		// backdate the two oldest past the cutoff; leave index 3 fresh.
+		old := time.Now().Add(-2 * time.Hour)
+		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 1)), old, old))
+		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 2)), old, old))
+
+		writeRotating(t, h, "ddddd") // fills app.00000004.log, overflows, runs the age prune
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.NotContains(t, files, idxName("app", 1), "over-age backup must be pruned")
+		require.NotContains(t, files, idxName("app", 2), "over-age backup must be pruned")
+		require.Contains(t, files, idxName("app", 3), "under-age backup must be kept")
+		require.Contains(t, files, idxName("app", 4), "the just-rotated fresh backup must be kept")
+	})
+
+	t.Run("negative maxAge is a no-op", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(100), WithMaxAge(-1))
+
+		writeRotating(t, h, "aaaaa") // -> app.00000001.log
+		writeRotating(t, h, "bbbbb") // -> app.00000002.log
+
+		// backdate everything far past any plausible cutoff.
+		old := time.Now().Add(-9000 * time.Hour)
+		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 1)), old, old))
+		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 2)), old, old))
+
+		writeRotating(t, h, "ccccc") // triggers another rotation + prune
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Contains(t, files, idxName("app", 1), "WithMaxAge(-1) must disable age pruning")
+		require.Contains(t, files, idxName("app", 2), "WithMaxAge(-1) must disable age pruning")
+	})
+
+	t.Run("maxFiles one preserves the triggering aged backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithMaxAge(time.Hour))
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1))
+		require.FileExists(t, backup)
+		contents, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		require.Equal(t, "abcd\n", string(contents))
+	})
+
+	t.Run("nanosecond maxAge keeps the newest backup until the next rotation", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(3), WithMaxFileSize(3), WithMaxAge(time.Nanosecond))
+
+		writeRotating(t, h, "abcd")
+		require.FileExists(t, filepath.Join(dir, idxName("app", 1)))
+
+		writeRotating(t, h, "efgh")
+		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)))
+		backup := filepath.Join(dir, idxName("app", 2))
+		require.FileExists(t, backup)
+		contents, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		require.Equal(t, "efgh\n", string(contents))
+	})
+}
+
+func TestRotatingFileHandler_Compress(t *testing.T) {
+	t.Parallel()
+	t.Run("rotated backup is a valid gz of the original bytes", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(7), WithMaxFiles(50), WithCompress())
+
+		writeRotating(t, h, "hello") // app.00000001.log = "hello\n" (6)
+		writeRotating(t, h, "world") // 12 > 7 -> rotate; compress index 1
+
+		gzPath := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, gzPath)
+		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)), "plaintext must be removed after compression")
+		require.Equal(t, "hello\nworld\n", readGzOrFail(t, gzPath), "the .gz must decompress to the pre-rotation plaintext")
+	})
+
+	t.Run("maxFiles one preserves the triggering compressed backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+	})
+
+	t.Run("compression rotation error reports persisted input length", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(3), WithCompress())
+		tmpPath := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension+"."+tmpExtension)
+		require.NoError(t, os.WriteFile(tmpPath, []byte("planted"), defaultFilePermissions))
+
+		n, err := h.Write([]byte("abcd"))
+		require.Error(t, err)
+		require.Equal(t, 4, n)
+	})
+
+	t.Run("maxFiles one keeps only the newest compressed backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
+
+		for _, message := range []string{"abcd", "efgh", "ijkl"} {
+			writeRotating(t, h, message)
+		}
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Len(t, files, 1)
+		require.Equal(t, "ijkl\n", files[idxName("app", 3)+"."+gzipExtension])
+	})
+
+	t.Run("zero maxFiles preserves the triggering compressed backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(0), WithMaxFileSize(3), WithCompress())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+	})
+
+	t.Run("nanosecond maxAge and compression preserve the newest backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithMaxAge(time.Nanosecond), WithCompress())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+	})
+
+	t.Run("higher pre-existing index survives compressed rotation", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
+		higher := filepath.Join(dir, idxName("app", 2))
+		require.NoError(t, os.WriteFile(higher, []byte("planted\n"), defaultFilePermissions))
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+		contents, err := os.ReadFile(higher)
+		require.NoError(t, err)
+		require.True(t, strings.HasPrefix(string(contents), "planted\n"))
+	})
+
+	t.Run("gz backup permissions are 0640", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(7), WithMaxFiles(50), WithCompress())
+		writeRotating(t, h, "hello")
+		writeRotating(t, h, "world")
+
+		fi, err := os.Stat(filepath.Join(dir, idxName("app", 1)+"."+gzipExtension))
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(defaultFilePermissions), fi.Mode().Perm(), "compressed backups must not be world-readable")
+	})
+
+	t.Run("compression preserves the source mtime so age pruning stays honest", func(t *testing.T) {
+		t.Parallel()
+
+		// D4: a genuinely old log compressed today must still age out. If compressFile
+		// dropped its os.Chtimes, the .gz would carry a fresh compression-time mtime and
+		// WithMaxAge would keep it forever; every other test stays green, so this guards
+		// the invariant directly.
+		dir := t.TempDir()
+		src := idxName("app", 1)
+		touchOld(t, filepath.Join(dir, src), "old\n", 72*time.Hour)
+		want, err := os.Stat(filepath.Join(dir, src))
+		require.NoError(t, err)
+
+		require.NoError(t, compressFile(dir, src, defaultFilePermissions))
+
+		require.NoFileExists(t, filepath.Join(dir, src), "plaintext removed after compression")
+		fi, err := os.Stat(filepath.Join(dir, src+"."+gzipExtension))
+		require.NoError(t, err)
+		require.WithinDuration(t, want.ModTime(), fi.ModTime(), time.Second,
+			"the .gz must inherit the source mtime, not the compression time")
+	})
+
+	t.Run("prune counts .log and .log.gz, removing oldest regardless of extension", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(3), WithCompress())
+
+		for range 6 {
+			writeRotating(t, h, "abcde") // 6 > 5 -> rotate + compress every write
+		}
+		writeRotating(t, h, "z") // fits, leaves a live file
+
+		// live (app.log-indexed) + at most maxFiles-1 compressed backups.
+		gzs, err := filepath.Glob(filepath.Join(dir, "*."+defaultFileExtension+"."+gzipExtension))
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(gzs), 2, "compressed backups must be pruned to maxFiles-1")
+
+		// the surviving backups must be the highest indices (oldest removed).
+		files := extractFilesWithGzOrFail(t, dir)
+		require.NotContains(t, files, idxName("app", 1)+"."+gzipExtension, "the oldest compressed backup must be pruned")
+	})
+
+	t.Run("crash leftover reconciles on next construction", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		// simulate a crash between rename-to-.gz and remove-plaintext: both exist for idx 3.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 3)), []byte("stale-plain\n"), defaultFilePermissions))
+		var gzBuf bytes.Buffer
+		zw := gzip.NewWriter(&gzBuf)
+		_, _ = zw.Write([]byte("authoritative\n"))
+		require.NoError(t, zw.Close())
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 3)+"."+gzipExtension), gzBuf.Bytes(), defaultFilePermissions))
+		// a stray temp from the interrupted compression must also be cleaned.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 3)+"."+gzipExtension+"."+tmpExtension), []byte("junk"), defaultFilePermissions))
+
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(50), WithCompress())
+		writeRotating(t, h, "post-recovery")
+
+		require.NoFileExists(t, filepath.Join(dir, idxName("app", 3)), "the stale plaintext must be discarded (the .gz wins)")
+		require.NoFileExists(t, filepath.Join(dir, idxName("app", 3)+"."+gzipExtension+"."+tmpExtension), "stale temp must be cleaned")
+		require.FileExists(t, filepath.Join(dir, idxName("app", 3)+"."+gzipExtension), "the durable .gz must remain")
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Equal(t, "authoritative\n", files[idxName("app", 3)+"."+gzipExtension])
+		require.Contains(t, files, idxName("app", 4), "resume must continue past the .gz-topped index")
+	})
+
+	t.Run("resume from an all-gz backup set starts at highest+1", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		for _, i := range []int{1, 2} {
+			var b bytes.Buffer
+			zw := gzip.NewWriter(&b)
+			_, _ = fmt.Fprintf(zw, "old-%d\n", i)
+			require.NoError(t, zw.Close())
+			require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", i)+"."+gzipExtension), b.Bytes(), defaultFilePermissions))
+		}
+
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(50), WithCompress())
+		writeRotating(t, h, "resumed")
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Contains(t, files[idxName("app", 3)], "resumed", "must resume at highest .gz index + 1, never appending into a .gz")
+	})
+
+	t.Run("fresh start with compress begins genuinely empty", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 1)+"."+gzipExtension), []byte("junk"), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 2)), []byte("junk\n"), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 2)+"."+gzipExtension+"."+tmpExtension), []byte("junk"), defaultFilePermissions))
+
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(50), WithCompress(), WithFreshStart())
+		writeRotating(t, h, "fresh")
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Len(t, files, 1, "fresh start must wipe .log, .gz and temp remnants")
+		require.Equal(t, "fresh\n", files[idxName("app", 1)])
+	})
+
+	t.Run("zero-option handler ignores a foreign .log.gz", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign.log.gz"), []byte("not ours"), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 1)), []byte("existing\n"), defaultFilePermissions))
+
+		// no compression option: the .gz must not enter globbing/parsing at all.
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(3))
+		writeRotating(t, h, "more")
+
+		require.FileExists(t, filepath.Join(dir, "foreign.log.gz"), "a foreign .gz must be untouched by a zero-option handler")
+		// use the plaintext-only helper: the foreign .gz holds non-gzip bytes on purpose,
+		// and *.log globbing (like the handler's) never touches it.
+		files, err := extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Equal(t, "existing\nmore\n", files[idxName("app", 1)], "resume must ignore the .gz and append to the plaintext")
+	})
+
+	t.Run("resume tolerates glob metacharacters in prefix with compress", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		const prefix = "app[v1]"
+		var b bytes.Buffer
+		zw := gzip.NewWriter(&b)
+		_, _ = zw.Write([]byte("old\n"))
+		require.NoError(t, zw.Close())
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName(prefix, 3)+"."+gzipExtension), b.Bytes(), defaultFilePermissions))
+
+		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1000), WithMaxFiles(50), WithCompress())
+		writeRotating(t, h, "after-restart")
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Contains(t, files[idxName(prefix, 4)], "after-restart", "metacharacter prefix must resume past the .gz index")
+	})
+}
+
+// TestRotatingFileHandler_OptionsForRaceCondition drives concurrent writes with the full
+// option set on (stable name + age + compress); the handler's mutex-guarded writer must
+// serialize rotation, rename and synchronous compression with no race and no lost message.
+func TestRotatingFileHandler_OptionsForRaceCondition(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	h := RotatingFileHandler(dir, "race",
+		WithMaxFileSize(70), WithMaxFiles(10),
+		WithStableCurrentName(), WithMaxAge(time.Hour), WithCompress(),
+	)
+
+	messages := make([]string, 0, 16)
+	for i := range 16 {
+		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
+	}
+
+	var mu sync.Mutex
+	var writeErr error
+	var wg sync.WaitGroup
+	for _, m := range messages {
+		wg.Add(1)
+		go func(txt string) {
+			defer wg.Done()
+			if _, e := h.Write([]byte(txt)); e != nil {
+				mu.Lock()
+				writeErr = errors.Join(writeErr, e)
+				mu.Unlock()
+			}
+		}(m)
+	}
+	wg.Wait()
+	require.NoError(t, writeErr)
+
+	var sb strings.Builder
+	for _, ctx := range extractFilesWithGzOrFail(t, dir) {
+		fmt.Fprintf(&sb, "%s\n", ctx)
+	}
+	all := sb.String()
+	for _, m := range messages {
+		assert.Contains(t, all, m, "every message must survive across rotation, rename and compression")
+	}
+
+	compressDir := t.TempDir()
+	compressHandler := RotatingFileHandler(compressDir, "race", WithMaxFiles(1), WithMaxFileSize(20), WithCompress())
+	var compressWriteErr error
+	var compressWG sync.WaitGroup
+	for range 16 {
+		compressWG.Add(1)
+		go func() {
+			defer compressWG.Done()
+			if _, e := compressHandler.Write([]byte("concurrent compressed message")); e != nil {
+				mu.Lock()
+				compressWriteErr = errors.Join(compressWriteErr, e)
+				mu.Unlock()
+			}
+		}()
+	}
+	compressWG.Wait()
+	require.NoError(t, compressWriteErr)
+}
+
+// BenchmarkRotatingFileHandler_Write measures the non-rotating hot path with all options
+// off. ReportAllocs guards the byte-identical contract: the options-off write path must
+// not add heap allocations over the plain v1.0.7 handler.
+func BenchmarkRotatingFileHandler_Write(b *testing.B) {
+	dir := b.TempDir()
+	// a huge cap so no write ever rotates: this isolates the append hot path.
+	h := RotatingFileHandler(dir, "bench", WithMaxFileSize(1<<30), WithMaxFiles(10))
+	msg := []byte("benchmark log line payload with a realistic width")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := h.Write(msg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestFileByFormatHandler(t *testing.T) {
 	t.Parallel()
 	t.Run("case-insensitive filesystem keeps the file just written", func(t *testing.T) {
@@ -721,452 +1356,6 @@ func TestFileByFormatHandlerForRaceCondition(t *testing.T) {
 		require.Contains(t, fileContext, expectedContext)
 	}
 }
-
-func TestVerifyFiles(t *testing.T) {
-	t.Parallel()
-	tmpFolder := t.TempDir()
-
-	err := verifyFiles(tmpFolder, 3, filepath.Join(tmpFolder, "0-current.log"))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(tmpFolder)
-	require.NoError(t, err)
-	require.Empty(t, files, "incorrect files count")
-
-	current := filepath.Join(tmpFolder, "0-current.log")
-	err = os.WriteFile(current, []byte("current"), os.ModePerm)
-	require.NoError(t, err)
-	for range 3 {
-		err = os.WriteFile(path.Join(tmpFolder, fmt.Sprintf("%d.%s", rand.Int31(), defaultFileExtension)), []byte("-"), os.ModePerm)
-		require.NoError(t, err)
-	}
-
-	err = verifyFiles(tmpFolder, 3, current)
-	require.NoError(t, err)
-
-	files, err = extractFilesOrFail(tmpFolder)
-	require.NoError(t, err)
-	require.Len(t, files, 3, "incorrect files count")
-	require.Contains(t, files, "0-current.log")
-}
-
-// testRotatingFileHandlerSeedFromDisk verifies that a handler constructed when a
-// log file already exists on disk does not over-count. With the size properly
-// seeded, the first write appends to file 1, crosses the threshold, and advances
-// the internal index to 2. The second write then lands in file 2 — proving the
-// rotation was triggered on time. Without the seed, both writes would land in
-// file 1 (the counter would incorrectly start at 0).
-func testRotatingFileHandlerSeedFromDisk(t *testing.T) {
-	t.Parallel()
-
-	tmpFolder := t.TempDir()
-	prefix := "seed"
-	const maxCap uint32 = 20
-
-	// pre-create the target file (index 1) with content right at the capacity limit.
-	existingContent := bytes.Repeat([]byte("x"), int(maxCap))
-	firstFile := path.Join(tmpFolder, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
-	err := os.WriteFile(firstFile, existingContent, defaultFilePermissions)
-	require.NoError(t, err)
-
-	// constructing the handler should stat the file and seed fileSize from its real size.
-	h := RotatingFileHandler(tmpFolder, prefix, WithMaxFileSize(maxCap), WithMaxFiles(5))
-
-	// first write: appends to file 1, then detects fileSize > maxCap and advances index to 2.
-	_, err = h.Write([]byte("first"))
-	require.NoError(t, err)
-
-	// second write: must go to file 2 (index advanced by the first write's overflow).
-	_, err = h.Write([]byte("second"))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(tmpFolder)
-	require.NoError(t, err)
-
-	// file 2 must exist, proving the handler correctly detected overflow after seeding.
-	secondFileName := fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)
-	content, secondExists := files[secondFileName]
-	require.True(t, secondExists, "second file must exist after seeded overflow triggered rotation")
-	require.Contains(t, content, "second", "second write must land in file 2")
-}
-
-// testRotatingFileHandlerResumeHighestIndex proves that a handler constructed
-// against a folder holding several indices resumes at the highest one instead of
-// restarting at index 1 (the oldest file).
-func testRotatingFileHandlerResumeHighestIndex(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const prefix = "resume"
-
-	// pre-create indices 1..3, each below the cap so the first write appends to 3.
-	for _, i := range []int{1, 2, 3} {
-		p := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, i, defaultFileExtension))
-		require.NoError(t, os.WriteFile(p, []byte(fmt.Sprintf("old-%d\n", i)), defaultFilePermissions))
-	}
-
-	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(10))
-
-	marker := "resumed-write"
-	_, err := h.Write([]byte(marker))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(dir)
-	require.NoError(t, err)
-
-	// the write must land in index 3 (highest existing), not index 1.
-	third := fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)
-	require.Contains(t, files[third], marker, "write must append to the highest existing index")
-	first := fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)
-	require.NotContains(t, files[first], marker, "write must NOT land in the oldest file")
-}
-
-// testRotatingFileHandlerNoDeleteNewest proves that, after a simulated restart at
-// the max file count, a few writes do not prune the file holding the most recent
-// write — the defect the resume fix closes.
-func testRotatingFileHandlerNoDeleteNewest(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const prefix = "newest"
-	const maxFiles = 3
-
-	// pre-create indices 1..3 (at the maxFiles limit); index 3 is near the cap so
-	// the first write rotates into index 4.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)), []byte("aaa\n"), defaultFilePermissions))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)), []byte("bbb\n"), defaultFilePermissions))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)), bytes.Repeat([]byte("c"), 10), defaultFilePermissions))
-
-	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(8), WithMaxFiles(maxFiles))
-
-	// first write appends to index 3 (already >8 after seeding) → rotates to index 4.
-	_, err := h.Write([]byte("d"))
-	require.NoError(t, err)
-	// second write lands in index 4, the newest data.
-	newest := "the-newest-line"
-	_, err = h.Write([]byte(newest))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(dir)
-	require.NoError(t, err)
-	require.LessOrEqual(t, len(files), maxFiles, "pruning must keep at most maxFiles files")
-
-	fourth := fmt.Sprintf("%s.%08X.%s", prefix, 4, defaultFileExtension)
-	require.Contains(t, files, fourth, "the newest file must NOT be pruned")
-	require.Contains(t, files[fourth], newest, "the newest write must survive pruning")
-}
-
-// testRotatingFileHandlerRotateIntoPreexisting proves that when the handler
-// rotates into a pre-existing higher-index file, it seeds that file's size from
-// disk so the file does not grow to ~2× the cap before rotating again.
-func testRotatingFileHandlerRotateIntoPreexisting(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const prefix = "preexist"
-	const maxCap uint32 = 20
-
-	// index 1 is at the cap so the first write rotates into index 2.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)), bytes.Repeat([]byte("a"), int(maxCap)), defaultFilePermissions))
-	// index 2 already exists near the cap from a prior run.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)), bytes.Repeat([]byte("b"), int(maxCap)), defaultFilePermissions))
-
-	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(maxCap), WithMaxFiles(10))
-
-	// resume lands on index 2 (highest). It is already at the cap, so the first
-	// write overflows and rotates to index 3.
-	_, err := h.Write([]byte("first"))
-	require.NoError(t, err)
-	// the next write must land in index 3, proving index 2 was not allowed to grow
-	// to ~2× the cap (which would happen if its size were seeded as 0 on rotation).
-	_, err = h.Write([]byte("third-file-write"))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(dir)
-	require.NoError(t, err)
-	third := fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)
-	require.Contains(t, files, third, "rotation must reach index 3")
-	require.Contains(t, files[third], "third-file-write", "the write after overflow must land in index 3")
-}
-
-// testRotatingFileHandlerResumeToleratesForeign proves that foreign or malformed
-// filenames in the folder are ignored by the resume scan without panicking.
-func testRotatingFileHandlerResumeToleratesForeign(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const prefix = "mixed"
-
-	// a valid index-2 file plus assorted files the scan must skip.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)), []byte("valid\n"), defaultFilePermissions))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, prefix+".nothex."+defaultFileExtension), []byte("x\n"), defaultFilePermissions))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, prefix+".0000000000000005."+defaultFileExtension), []byte("too long\n"), defaultFilePermissions))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign."+defaultFileExtension), []byte("other\n"), defaultFilePermissions))
-
-	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(10))
-
-	marker := "after-mixed"
-	_, err := h.Write([]byte(marker))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(dir)
-	require.NoError(t, err)
-	// resume must have picked index 2 (the only well-formed match), appending there.
-	second := fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)
-	require.Contains(t, files[second], marker, "write must append to the only valid index")
-}
-
-// testRotatingFileHandlerResumeGlobMeta proves the resume scan is not corrupted by glob
-// metacharacters in the prefix: filepath.Glob is fed the literal "*.log" and the prefix
-// is matched with a plain HasPrefix, so a prefix like "app[v1]" still resumes at the
-// highest existing index instead of silently misfiring back to index 1 (which would leave
-// the newest file as the prune-first orphan — the exact bug the resume logic prevents).
-func testRotatingFileHandlerResumeGlobMeta(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	const prefix = "app[v1]" // '[' and ']' are glob metacharacters
-
-	third := fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, third), []byte("old\n"), defaultFilePermissions))
-
-	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(10))
-
-	marker := "after-restart"
-	_, err := h.Write([]byte(marker))
-	require.NoError(t, err)
-
-	files, err := extractFilesOrFail(dir)
-	require.NoError(t, err)
-	require.Contains(t, files[third], marker, "write must append to the resumed highest index despite metacharacters")
-	_, hasIndex1 := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-	require.False(t, hasIndex1, "resume must not have created a fresh index-1 file")
-}
-
-// errWriter is an io.Writer that always returns an error.
-
-func testRotatingFileHandlerFreshStart(t *testing.T) {
-	t.Parallel()
-
-	const prefix = "reset"
-
-	t.Run("removes existing ring files at construction", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		// pre-populate several ring files — a prior run that rotated past index 1.
-		firstFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
-		secondFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension))
-		require.NoError(t, os.WriteFile(firstFile, bytes.Repeat([]byte("x"), 50), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(secondFile, bytes.Repeat([]byte("y"), 50), defaultFilePermissions))
-
-		// construct the handler — removal must happen here, before any Write. The whole
-		// ring is cleared, not just index-1 truncated, so no stale file survives to be
-		// appended onto or pruned ahead of the fresh writes.
-		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(5), WithFreshStart())
-
-		_, err := os.Stat(firstFile)
-		require.ErrorIs(t, err, os.ErrNotExist, "index-1 file must be removed at construction")
-		_, err = os.Stat(secondFile)
-		require.ErrorIs(t, err, os.ErrNotExist, "stale higher-index file must be removed at construction")
-
-		// now write something and assert only the new content is present, at index 1.
-		_, err = h.Write([]byte("first"))
-		require.NoError(t, err)
-
-		files, err := extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 1)
-		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-		require.True(t, ok)
-		require.Equal(t, "first\n", content, "only the fresh write must be present; old content must be gone")
-	})
-
-	t.Run("no existing file is a no-op", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		// no pre-existing files.
-		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(5), WithFreshStart())
-
-		// resetRotation only removes matching files; it never creates the index-1
-		// file, so construction must not create it when none existed — the base
-		// handler creates it on the first write, and this handler must match that.
-		firstFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
-		_, err := os.Stat(firstFile)
-		require.ErrorIs(t, err, os.ErrNotExist, "construction must not create the index-1 file when none existed")
-
-		_, err = h.Write([]byte("hello"))
-		require.NoError(t, err)
-
-		files, err := extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 1)
-		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-		require.True(t, ok)
-		require.Equal(t, "hello\n", content)
-	})
-
-	t.Run("rotation and prune still apply", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		// maxFileSize=7 triggers rotation after ~7 bytes; maxFiles=2.
-		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(7), WithMaxFiles(2), WithFreshStart())
-
-		// write 1: "111\n" = 4 bytes, file 1 size = 4 (no rotation).
-		_, err := h.Write(bytes.Repeat([]byte("1"), 3))
-		require.NoError(t, err)
-		files, err := extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 1)
-
-		// write 2: "22\n" = 3 bytes, file 1 total = 7 (no rotation yet — threshold is >7, not >=7).
-		_, err = h.Write(bytes.Repeat([]byte("2"), 2))
-		require.NoError(t, err)
-		files, err = extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 1)
-		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-		require.True(t, ok)
-		require.Equal(t, "111\n22\n", content)
-
-		// write 3: "3\n" = 2 bytes, file 1 total = 9 > 7 → index advances to 2.
-		// the write itself still goes to file 1; file 2 appears only on the next write.
-		_, err = h.Write([]byte("3"))
-		require.NoError(t, err)
-		files, err = extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 1, "rotation advances the index but file 2 is only created on the next write")
-		content, ok = files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-		require.True(t, ok)
-		require.Equal(t, "111\n22\n3\n", content)
-
-		// write 4 goes to file 2 (index advanced after write 3).
-		_, err = h.Write([]byte("4"))
-		require.NoError(t, err)
-		files, err = extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 2, "file 2 must exist after the first write following rotation")
-		_, hasFile2 := files[fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)]
-		require.True(t, hasFile2, "file 2 must have been created")
-
-		// write several more to force prune: maxFiles=2 so file 1 is pruned once file 3 exists.
-		_, err = h.Write(bytes.Repeat([]byte("5"), 10))
-		require.NoError(t, err)
-		_, err = h.Write(bytes.Repeat([]byte("6"), 10))
-		require.NoError(t, err)
-		files, err = extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Len(t, files, 2, "pruning must keep at most maxFiles files")
-		_, hasFile1 := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-		require.False(t, hasFile1, "file 1 must have been pruned")
-	})
-
-	t.Run("seeded size resets to zero", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		const maxCap uint32 = 20
-
-		// pre-create index-1 file at exactly maxCap bytes — without fresh start, this
-		// seeds the counter at maxCap and the first write would trigger rotation.
-		firstFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
-		err := os.WriteFile(firstFile, bytes.Repeat([]byte("x"), int(maxCap)), defaultFilePermissions)
-		require.NoError(t, err)
-
-		// with fresh start the ring is cleared, so the seeded counter must be 0.
-		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(maxCap), WithMaxFiles(5), WithFreshStart())
-
-		// a small write must NOT trigger rotation (seeded size was 0, not maxCap).
-		_, err = h.Write([]byte("small"))
-		require.NoError(t, err)
-
-		files, err := extractFilesOrFail(dir)
-		require.NoError(t, err)
-
-		// index must stay at 1 — no rotation occurred.
-		_, hasFile2 := files[fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)]
-		require.False(t, hasFile2, "no rotation must have occurred because seeded size was 0 after fresh start")
-
-		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
-		require.True(t, ok)
-		require.Equal(t, "small\n", content, "file 1 must contain only the fresh write after fresh start")
-	})
-}
-
-func TestRotatingFileHandler_FreshStartForRaceCondition(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-
-	// construct once — single truncation before any goroutine starts.
-	h := RotatingFileHandler(dir, "race", WithMaxFileSize(70), WithMaxFiles(10), WithFreshStart())
-
-	messages := make([]string, 0, 16)
-	for i := range 16 {
-		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
-	}
-
-	var mu sync.Mutex
-	var writeErr error
-	wg := sync.WaitGroup{}
-	for _, m := range messages {
-		wg.Add(1)
-		go func(wg *sync.WaitGroup, w io.Writer, txt string) {
-			defer wg.Done()
-			if _, e := w.Write([]byte(txt)); e != nil {
-				mu.Lock()
-				writeErr = errors.Join(writeErr, e)
-				mu.Unlock()
-			}
-		}(&wg, h, m)
-	}
-	wg.Wait()
-	require.NoError(t, writeErr)
-
-	files, err := extractFilesOrFail(dir)
-	require.NoError(t, err)
-
-	var sb strings.Builder
-	for f, ctx := range files {
-		fmt.Fprintf(&sb, "\n%s:\n%s\n", f, ctx)
-	}
-	allContent := strings.TrimSpace(sb.String())
-
-	for _, m := range messages {
-		if !strings.Contains(allContent, m) {
-			assert.Containsf(t, allContent, m, "message not found in logs: %s", m)
-		}
-	}
-}
-
-func extractFilesOrFail(folder string) (map[string]string, error) {
-	files, err := filepath.Glob(path.Join(folder, "*."+defaultFileExtension))
-	if err != nil || len(files) == 0 {
-		return nil, err
-	}
-	r := make(map[string]string, 0)
-	for _, filePath := range files {
-		b, e := os.ReadFile(filePath)
-		if runtime.GOOS == "windows" && strings.Contains(filePath, "\\") {
-			// in some cases the filepath library is not able to handle the backslashes correctly
-			// so we need to replace them with forward slashes
-			filePath = strings.ReplaceAll(filePath, "\\", "/")
-		}
-		filePath = path.Base(filePath)
-		if e != nil {
-			r[filePath] = e.Error()
-		} else {
-			r[filePath] = string(b)
-		}
-	}
-	return r, nil
-}
-
-type probe struct{ buf bytes.Buffer }
-
-func (p *probe) Write(b []byte) (int, error) { return p.buf.Write(b) }
-func (p *probe) String() string              { return p.buf.String() }
 
 //nolint:paralleltest,tparallel // subtests swap the std log output and share os.TempDir()/logs
 func TestNewFileLogger(t *testing.T) {
@@ -1676,282 +1865,32 @@ func TestNewFileLogger_RotationOptions(t *testing.T) {
 	})
 }
 
-// readGzOrFail decompresses a gzip file and returns its plaintext, failing the test on
-// any error. Compression tests decompress and compare bytes because an existence-only
-// check would pass a rename-that-forgot-to-gzip bug.
-func readGzOrFail(t *testing.T, filePath string) string {
-	t.Helper()
-	f, err := os.Open(filePath)
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	zr, err := gzip.NewReader(f)
-	require.NoError(t, err)
-	defer func() { _ = zr.Close() }()
-	b, err := io.ReadAll(zr)
-	require.NoError(t, err)
-	return string(b)
-}
+func TestVerifyFiles(t *testing.T) {
+	t.Parallel()
+	tmpFolder := t.TempDir()
 
-// extractFilesWithGzOrFail is the .gz-aware sibling of extractFilesOrFail: it maps every
-// *.log to its raw bytes and every *.log.gz to its DECOMPRESSED plaintext, keyed by base
-// name. The plain helper globs only *.log and is blind to compressed backups.
-func extractFilesWithGzOrFail(t *testing.T, folder string) map[string]string {
-	t.Helper()
-	r := make(map[string]string)
-
-	logs, err := filepath.Glob(filepath.Join(folder, "*."+defaultFileExtension))
+	err := verifyFiles(tmpFolder, 3, filepath.Join(tmpFolder, "0-current.log"))
 	require.NoError(t, err)
-	for _, p := range logs {
-		b, e := os.ReadFile(p)
-		require.NoError(t, e)
-		r[filepath.Base(p)] = string(b)
+
+	files, err := extractFilesOrFail(tmpFolder)
+	require.NoError(t, err)
+	require.Empty(t, files, "incorrect files count")
+
+	current := filepath.Join(tmpFolder, "0-current.log")
+	err = os.WriteFile(current, []byte("current"), os.ModePerm)
+	require.NoError(t, err)
+	for range 3 {
+		err = os.WriteFile(path.Join(tmpFolder, fmt.Sprintf("%d.%s", rand.Int31(), defaultFileExtension)), []byte("-"), os.ModePerm)
+		require.NoError(t, err)
 	}
 
-	gzs, err := filepath.Glob(filepath.Join(folder, "*."+defaultFileExtension+"."+gzipExtension))
+	err = verifyFiles(tmpFolder, 3, current)
 	require.NoError(t, err)
-	for _, p := range gzs {
-		r[filepath.Base(p)] = readGzOrFail(t, p)
-	}
-	return r
-}
 
-// writeRotating writes s through h and asserts no error, keeping the option tests terse.
-func writeRotating(t *testing.T, h io.Writer, s string) {
-	t.Helper()
-	_, err := h.Write([]byte(s))
+	files, err = extractFilesOrFail(tmpFolder)
 	require.NoError(t, err)
-}
-
-// touchOld writes content to path and backdates its mtime by age, for deterministic
-// age-prune tests (mtime is real filesystem data, so no clock seam is needed).
-func touchOld(t *testing.T, filePath, content string, age time.Duration) {
-	t.Helper()
-	require.NoError(t, os.WriteFile(filePath, []byte(content), defaultFilePermissions))
-	when := time.Now().Add(-age)
-	require.NoError(t, os.Chtimes(filePath, when, when))
-}
-
-func idxName(prefix string, index int) string {
-	return fmt.Sprintf("%s.%08X.%s", prefix, index, defaultFileExtension)
-}
-
-func TestRotatingFileHandler_StableCurrentName(t *testing.T) {
-	t.Parallel()
-	t.Run("live path fixed while indexed backups accumulate", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "access", WithMaxFileSize(10), WithMaxFiles(20), WithStableCurrentName())
-
-		writeRotating(t, h, "aaaaa") // access.log now holds "aaaaa\n" (6 bytes)
-		writeRotating(t, h, "bbbbb") // 12 bytes exceeds 10-byte limit, rotates to access.00000001.log
-		writeRotating(t, h, "ccccc") // access.log now holds "ccccc\n"
-		writeRotating(t, h, "ddddd") // 12 > 10 -> rotate to access.00000002.log
-		writeRotating(t, h, "eeeee") // access.log = "eeeee\n" (still fits)
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Equal(t, "eeeee\n", files["access.log"], "the live file must stay at the fixed prefix.log path")
-		require.Equal(t, "aaaaa\nbbbbb\n", files[idxName("access", 1)])
-		require.Equal(t, "ccccc\nddddd\n", files[idxName("access", 2)])
-		require.NotContains(t, files, idxName("access", 3), "no backup is created for the current live slot")
-	})
-
-	t.Run("maxFiles one preserves the triggering stable backup", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "access", WithMaxFiles(1), WithMaxFileSize(3), WithStableCurrentName())
-
-		writeRotating(t, h, "abcd")
-
-		backup := filepath.Join(dir, idxName("access", 1))
-		require.FileExists(t, backup)
-		contents, err := os.ReadFile(backup)
-		require.NoError(t, err)
-		require.Equal(t, "abcd\n", string(contents))
-	})
-	t.Run("rotation past a planted backup protects the renamed slot", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "access", WithStableCurrentName(), WithMaxFiles(1), WithMaxFileSize(3))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("planted\n"), defaultFilePermissions))
-
-		writeRotating(t, h, "abcd")
-
-		contents, err := os.ReadFile(filepath.Join(dir, idxName("access", 2)))
-		require.NoError(t, err)
-		require.Equal(t, "abcd\n", string(contents))
-	})
-
-	t.Run("resume seeds size from prefix.log; next index is max+1", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		// a prior run left a backup at index 5 and a live file near the cap.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 5)), []byte("bck"), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "access.log"), bytes.Repeat([]byte("x"), 95), defaultFilePermissions))
-
-		h := RotatingFileHandler(dir, "access", WithMaxFileSize(100), WithMaxFiles(50), WithStableCurrentName())
-
-		// 95 + "0123456789\n" (11) = 106 > 100 -> rotate. Seeded from the 3-byte backup it
-		// would be 3+11=14 and never rotate: reaching index 6 proves the live seed.
-		writeRotating(t, h, "0123456789")
-		writeRotating(t, h, "next")
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Contains(t, files, idxName("access", 6), "next backup index must be highest(5)+1")
-		require.Equal(t, "bck", files[idxName("access", 5)], "the pre-existing backup must be untouched")
-		require.Equal(t, "next\n", files["access.log"], "the fresh live file holds the post-rotation write")
-	})
-
-	t.Run("rotation past a pre-existing index does not clobber", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("b1\n"), defaultFilePermissions))
-
-		h := RotatingFileHandler(dir, "access", WithMaxFileSize(5), WithMaxFiles(50), WithStableCurrentName())
-		// resume set index=2; plant a file at that exact slot before the first rotation.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 2)), []byte("PLANTED\n"), defaultFilePermissions))
-
-		writeRotating(t, h, "aaaaa") // 6 > 5 -> rotate; collision guard must skip index 2
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Equal(t, "PLANTED\n", files[idxName("access", 2)], "the pre-existing backup must not be clobbered")
-		require.Equal(t, "aaaaa\n", files[idxName("access", 3)], "rotation must advance to the next free slot")
-	})
-
-	t.Run("small maxFiles over many rotations keeps prefix.log", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "access", WithMaxFileSize(5), WithMaxFiles(2), WithStableCurrentName())
-
-		for range 10 {
-			writeRotating(t, h, "abcde") // 6 > 5 -> rotate on every write
-		}
-		writeRotating(t, h, "z") // fits (2 bytes) -> leaves a live prefix.log present
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Contains(t, files, "access.log", "the live file must survive aggressive pruning")
-		require.Equal(t, "z\n", files["access.log"])
-		require.LessOrEqual(t, len(files), 2, "total files must stay within maxFiles (live + maxFiles-1 backups)")
-	})
-
-	t.Run("off then on adopts legacy backups as backups", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("legacy1\n"), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 2)), []byte("legacy2\n"), defaultFilePermissions))
-
-		h := RotatingFileHandler(dir, "access", WithMaxFileSize(1000), WithMaxFiles(50), WithStableCurrentName())
-		writeRotating(t, h, "fresh")
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Equal(t, "fresh\n", files["access.log"], "the live target must be prefix.log, never a legacy backup")
-		require.Equal(t, "legacy1\n", files[idxName("access", 1)], "legacy backups are adopted untouched")
-		require.Equal(t, "legacy2\n", files[idxName("access", 2)])
-	})
-
-	t.Run("on then off leaves a stale prefix.log in place", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		// a prior stable run left prefix.log plus an indexed backup.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "access.log"), []byte("stale-live\n"), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 3)), []byte("b3\n"), defaultFilePermissions))
-
-		// indexed mode (no stable option): resume at the highest index and append there.
-		h := RotatingFileHandler(dir, "access", WithMaxFileSize(1000), WithMaxFiles(50))
-		writeRotating(t, h, "indexed-write")
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Contains(t, files[idxName("access", 3)], "indexed-write", "indexed mode resumes on the indexed backup")
-		require.Equal(t, "stale-live\n", files["access.log"], "a stale prefix.log survives and must be drained manually")
-	})
-}
-
-func TestRotatingFileHandler_MaxAge(t *testing.T) {
-	t.Parallel()
-	t.Run("backdated backups pruned on rotation, fresh kept", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(100), WithMaxAge(time.Hour))
-
-		writeRotating(t, h, "aaaaa") // -> app.00000001.log
-		writeRotating(t, h, "bbbbb") // -> app.00000002.log
-		writeRotating(t, h, "ccccc") // -> app.00000003.log (index now 4)
-
-		// backdate the two oldest past the cutoff; leave index 3 fresh.
-		old := time.Now().Add(-2 * time.Hour)
-		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 1)), old, old))
-		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 2)), old, old))
-
-		writeRotating(t, h, "ddddd") // fills app.00000004.log, overflows, runs the age prune
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.NotContains(t, files, idxName("app", 1), "over-age backup must be pruned")
-		require.NotContains(t, files, idxName("app", 2), "over-age backup must be pruned")
-		require.Contains(t, files, idxName("app", 3), "under-age backup must be kept")
-		require.Contains(t, files, idxName("app", 4), "the just-rotated fresh backup must be kept")
-	})
-
-	t.Run("negative maxAge is a no-op", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(100), WithMaxAge(-1))
-
-		writeRotating(t, h, "aaaaa") // -> app.00000001.log
-		writeRotating(t, h, "bbbbb") // -> app.00000002.log
-
-		// backdate everything far past any plausible cutoff.
-		old := time.Now().Add(-9000 * time.Hour)
-		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 1)), old, old))
-		require.NoError(t, os.Chtimes(filepath.Join(dir, idxName("app", 2)), old, old))
-
-		writeRotating(t, h, "ccccc") // triggers another rotation + prune
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Contains(t, files, idxName("app", 1), "WithMaxAge(-1) must disable age pruning")
-		require.Contains(t, files, idxName("app", 2), "WithMaxAge(-1) must disable age pruning")
-	})
-
-	t.Run("maxFiles one preserves the triggering aged backup", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithMaxAge(time.Hour))
-
-		writeRotating(t, h, "abcd")
-
-		backup := filepath.Join(dir, idxName("app", 1))
-		require.FileExists(t, backup)
-		contents, err := os.ReadFile(backup)
-		require.NoError(t, err)
-		require.Equal(t, "abcd\n", string(contents))
-	})
-
-	t.Run("nanosecond maxAge keeps the newest backup until the next rotation", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(3), WithMaxFileSize(3), WithMaxAge(time.Nanosecond))
-
-		writeRotating(t, h, "abcd")
-		require.FileExists(t, filepath.Join(dir, idxName("app", 1)))
-
-		writeRotating(t, h, "efgh")
-		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)))
-		backup := filepath.Join(dir, idxName("app", 2))
-		require.FileExists(t, backup)
-		contents, err := os.ReadFile(backup)
-		require.NoError(t, err)
-		require.Equal(t, "efgh\n", string(contents))
-	})
+	require.Len(t, files, 3, "incorrect files count")
+	require.Contains(t, files, "0-current.log")
 }
 
 // TestPruneRotation exercises the retention core directly: it is deterministic (mtimes are
@@ -2119,383 +2058,444 @@ func TestPruneRotation(t *testing.T) {
 	})
 }
 
-func TestRotatingFileHandler_Compress(t *testing.T) {
-	t.Parallel()
-	t.Run("rotated backup is a valid gz of the original bytes", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(7), WithMaxFiles(50), WithCompress())
-
-		writeRotating(t, h, "hello") // app.00000001.log = "hello\n" (6)
-		writeRotating(t, h, "world") // 12 > 7 -> rotate; compress index 1
-
-		gzPath := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
-		require.FileExists(t, gzPath)
-		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)), "plaintext must be removed after compression")
-		require.Equal(t, "hello\nworld\n", readGzOrFail(t, gzPath), "the .gz must decompress to the pre-rotation plaintext")
-	})
-
-	t.Run("maxFiles one preserves the triggering compressed backup", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
-
-		writeRotating(t, h, "abcd")
-
-		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
-		require.FileExists(t, backup)
-		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
-	})
-
-	t.Run("compression rotation error reports persisted input length", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(3), WithCompress())
-		tmpPath := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension+"."+tmpExtension)
-		require.NoError(t, os.WriteFile(tmpPath, []byte("planted"), defaultFilePermissions))
-
-		n, err := h.Write([]byte("abcd"))
-		require.Error(t, err)
-		require.Equal(t, 4, n)
-	})
-
-	t.Run("maxFiles one keeps only the newest compressed backup", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
-
-		for _, message := range []string{"abcd", "efgh", "ijkl"} {
-			writeRotating(t, h, message)
-		}
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Len(t, files, 1)
-		require.Equal(t, "ijkl\n", files[idxName("app", 3)+"."+gzipExtension])
-	})
-
-	t.Run("zero maxFiles preserves the triggering compressed backup", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(0), WithMaxFileSize(3), WithCompress())
-
-		writeRotating(t, h, "abcd")
-
-		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
-		require.FileExists(t, backup)
-		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
-	})
-
-	t.Run("nanosecond maxAge and compression preserve the newest backup", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithMaxAge(time.Nanosecond), WithCompress())
-
-		writeRotating(t, h, "abcd")
-
-		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
-		require.FileExists(t, backup)
-		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
-	})
-
-	t.Run("higher pre-existing index survives compressed rotation", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
-		higher := filepath.Join(dir, idxName("app", 2))
-		require.NoError(t, os.WriteFile(higher, []byte("planted\n"), defaultFilePermissions))
-
-		writeRotating(t, h, "abcd")
-
-		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
-		require.FileExists(t, backup)
-		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
-		contents, err := os.ReadFile(higher)
-		require.NoError(t, err)
-		require.True(t, strings.HasPrefix(string(contents), "planted\n"))
-	})
-
-	t.Run("gz backup permissions are 0640", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(7), WithMaxFiles(50), WithCompress())
-		writeRotating(t, h, "hello")
-		writeRotating(t, h, "world")
-
-		fi, err := os.Stat(filepath.Join(dir, idxName("app", 1)+"."+gzipExtension))
-		require.NoError(t, err)
-		require.Equal(t, os.FileMode(defaultFilePermissions), fi.Mode().Perm(), "compressed backups must not be world-readable")
-	})
-
-	t.Run("compression preserves the source mtime so age pruning stays honest", func(t *testing.T) {
-		t.Parallel()
-
-		// D4: a genuinely old log compressed today must still age out. If compressFile
-		// dropped its os.Chtimes, the .gz would carry a fresh compression-time mtime and
-		// WithMaxAge would keep it forever; every other test stays green, so this guards
-		// the invariant directly.
-		dir := t.TempDir()
-		src := idxName("app", 1)
-		touchOld(t, filepath.Join(dir, src), "old\n", 72*time.Hour)
-		want, err := os.Stat(filepath.Join(dir, src))
-		require.NoError(t, err)
-
-		require.NoError(t, compressFile(dir, src, defaultFilePermissions))
-
-		require.NoFileExists(t, filepath.Join(dir, src), "plaintext removed after compression")
-		fi, err := os.Stat(filepath.Join(dir, src+"."+gzipExtension))
-		require.NoError(t, err)
-		require.WithinDuration(t, want.ModTime(), fi.ModTime(), time.Second,
-			"the .gz must inherit the source mtime, not the compression time")
-	})
-
-	t.Run("prune counts .log and .log.gz, removing oldest regardless of extension", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(3), WithCompress())
-
-		for range 6 {
-			writeRotating(t, h, "abcde") // 6 > 5 -> rotate + compress every write
-		}
-		writeRotating(t, h, "z") // fits, leaves a live file
-
-		// live (app.log-indexed) + at most maxFiles-1 compressed backups.
-		gzs, err := filepath.Glob(filepath.Join(dir, "*."+defaultFileExtension+"."+gzipExtension))
-		require.NoError(t, err)
-		require.LessOrEqual(t, len(gzs), 2, "compressed backups must be pruned to maxFiles-1")
-
-		// the surviving backups must be the highest indices (oldest removed).
-		files := extractFilesWithGzOrFail(t, dir)
-		require.NotContains(t, files, idxName("app", 1)+"."+gzipExtension, "the oldest compressed backup must be pruned")
-	})
-
-	t.Run("crash leftover reconciles on next construction", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		// simulate a crash between rename-to-.gz and remove-plaintext: both exist for idx 3.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 3)), []byte("stale-plain\n"), defaultFilePermissions))
-		var gzBuf bytes.Buffer
-		zw := gzip.NewWriter(&gzBuf)
-		_, _ = zw.Write([]byte("authoritative\n"))
-		require.NoError(t, zw.Close())
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 3)+"."+gzipExtension), gzBuf.Bytes(), defaultFilePermissions))
-		// a stray temp from the interrupted compression must also be cleaned.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 3)+"."+gzipExtension+"."+tmpExtension), []byte("junk"), defaultFilePermissions))
-
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(50), WithCompress())
-		writeRotating(t, h, "post-recovery")
-
-		require.NoFileExists(t, filepath.Join(dir, idxName("app", 3)), "the stale plaintext must be discarded (the .gz wins)")
-		require.NoFileExists(t, filepath.Join(dir, idxName("app", 3)+"."+gzipExtension+"."+tmpExtension), "stale temp must be cleaned")
-		require.FileExists(t, filepath.Join(dir, idxName("app", 3)+"."+gzipExtension), "the durable .gz must remain")
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Equal(t, "authoritative\n", files[idxName("app", 3)+"."+gzipExtension])
-		require.Contains(t, files, idxName("app", 4), "resume must continue past the .gz-topped index")
-	})
-
-	t.Run("resume from an all-gz backup set starts at highest+1", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		for _, i := range []int{1, 2} {
-			var b bytes.Buffer
-			zw := gzip.NewWriter(&b)
-			_, _ = fmt.Fprintf(zw, "old-%d\n", i)
-			require.NoError(t, zw.Close())
-			require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", i)+"."+gzipExtension), b.Bytes(), defaultFilePermissions))
-		}
-
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(50), WithCompress())
-		writeRotating(t, h, "resumed")
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Contains(t, files[idxName("app", 3)], "resumed", "must resume at highest .gz index + 1, never appending into a .gz")
-	})
-
-	t.Run("fresh start with compress begins genuinely empty", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 1)+"."+gzipExtension), []byte("junk"), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 2)), []byte("junk\n"), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 2)+"."+gzipExtension+"."+tmpExtension), []byte("junk"), defaultFilePermissions))
-
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(50), WithCompress(), WithFreshStart())
-		writeRotating(t, h, "fresh")
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Len(t, files, 1, "fresh start must wipe .log, .gz and temp remnants")
-		require.Equal(t, "fresh\n", files[idxName("app", 1)])
-	})
-
-	t.Run("zero-option handler ignores a foreign .log.gz", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign.log.gz"), []byte("not ours"), defaultFilePermissions))
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", 1)), []byte("existing\n"), defaultFilePermissions))
-
-		// no compression option: the .gz must not enter globbing/parsing at all.
-		h := RotatingFileHandler(dir, "app", WithMaxFileSize(1000), WithMaxFiles(3))
-		writeRotating(t, h, "more")
-
-		require.FileExists(t, filepath.Join(dir, "foreign.log.gz"), "a foreign .gz must be untouched by a zero-option handler")
-		// use the plaintext-only helper: the foreign .gz holds non-gzip bytes on purpose,
-		// and *.log globbing (like the handler's) never touches it.
-		files, err := extractFilesOrFail(dir)
-		require.NoError(t, err)
-		require.Equal(t, "existing\nmore\n", files[idxName("app", 1)], "resume must ignore the .gz and append to the plaintext")
-	})
-
-	t.Run("resume tolerates glob metacharacters in prefix with compress", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		const prefix = "app[v1]"
-		var b bytes.Buffer
-		zw := gzip.NewWriter(&b)
-		_, _ = zw.Write([]byte("old\n"))
-		require.NoError(t, zw.Close())
-		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName(prefix, 3)+"."+gzipExtension), b.Bytes(), defaultFilePermissions))
-
-		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1000), WithMaxFiles(50), WithCompress())
-		writeRotating(t, h, "after-restart")
-
-		files := extractFilesWithGzOrFail(t, dir)
-		require.Contains(t, files[idxName(prefix, 4)], "after-restart", "metacharacter prefix must resume past the .gz index")
-	})
-}
-
-// TestRotatingFileHandler_OptionsForRaceCondition drives concurrent writes with the full
-// option set on (stable name + age + compress); the handler's mutex-guarded writer must
-// serialize rotation, rename and synchronous compression with no race and no lost message.
-func TestRotatingFileHandler_OptionsForRaceCondition(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	h := RotatingFileHandler(dir, "race",
-		WithMaxFileSize(70), WithMaxFiles(10),
-		WithStableCurrentName(), WithMaxAge(time.Hour), WithCompress(),
-	)
-
-	messages := make([]string, 0, 16)
-	for i := range 16 {
-		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
-	}
-
-	var mu sync.Mutex
-	var writeErr error
-	var wg sync.WaitGroup
-	for _, m := range messages {
-		wg.Add(1)
-		go func(txt string) {
-			defer wg.Done()
-			if _, e := h.Write([]byte(txt)); e != nil {
-				mu.Lock()
-				writeErr = errors.Join(writeErr, e)
-				mu.Unlock()
-			}
-		}(m)
-	}
-	wg.Wait()
-	require.NoError(t, writeErr)
-
-	var sb strings.Builder
-	for _, ctx := range extractFilesWithGzOrFail(t, dir) {
-		fmt.Fprintf(&sb, "%s\n", ctx)
-	}
-	all := sb.String()
-	for _, m := range messages {
-		assert.Contains(t, all, m, "every message must survive across rotation, rename and compression")
-	}
-
-	compressDir := t.TempDir()
-	compressHandler := RotatingFileHandler(compressDir, "race", WithMaxFiles(1), WithMaxFileSize(20), WithCompress())
-	var compressWriteErr error
-	var compressWG sync.WaitGroup
-	for range 16 {
-		compressWG.Add(1)
-		go func() {
-			defer compressWG.Done()
-			if _, e := compressHandler.Write([]byte("concurrent compressed message")); e != nil {
-				mu.Lock()
-				compressWriteErr = errors.Join(compressWriteErr, e)
-				mu.Unlock()
-			}
-		}()
-	}
-	compressWG.Wait()
-	require.NoError(t, compressWriteErr)
-}
-
-// BenchmarkRotatingFileHandler_Write measures the non-rotating hot path with all options
-// off. ReportAllocs guards the byte-identical contract: the options-off write path must
-// not add heap allocations over the plain v1.0.7 handler.
-func BenchmarkRotatingFileHandler_Write(b *testing.B) {
-	dir := b.TempDir()
-	// a huge cap so no write ever rotates: this isolates the append hot path.
-	h := RotatingFileHandler(dir, "bench", WithMaxFileSize(1<<30), WithMaxFiles(10))
-	msg := []byte("benchmark log line payload with a realistic width")
-
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		if _, err := h.Write(msg); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func TestWithMaxAgeDays(t *testing.T) {
-	t.Parallel()
-	t.Run("resolves to the same maxAge as the equivalent WithMaxAge", func(t *testing.T) {
-		t.Parallel()
-
-		var got, want rotatingFileConfig
-		WithMaxAgeDays(14)(&got)
-		WithMaxAge(14 * 24 * time.Hour)(&want)
-		require.Equal(t, want.maxAge, got.maxAge,
-			"WithMaxAgeDays(14) must equal WithMaxAge(14 days)")
-	})
-
-	t.Run("zero disables age pruning", func(t *testing.T) {
-		t.Parallel()
-
-		var cfg rotatingFileConfig
-		WithMaxAgeDays(0)(&cfg)
-		require.LessOrEqual(t, cfg.maxAge, time.Duration(0),
-			"WithMaxAgeDays(0) must delegate to the zero-disables path")
-	})
-
-	t.Run("day bound prunes a backup older than it, keeps a fresh one", func(t *testing.T) {
-		t.Parallel()
-
-		dir := t.TempDir()
-		touchOld(t, filepath.Join(dir, idxName("app", 1)), "o1\n", 48*time.Hour) // older than 1 day
-		touchOld(t, filepath.Join(dir, idxName("app", 2)), "f2\n", 0)            // fresh
-
-		var cfg rotatingFileConfig
-		cfg.maxFiles = 100
-		WithMaxAgeDays(1)(&cfg)
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 3), 0, time.Now()))
-
-		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)),
-			"the 48h-old backup must be pruned under a 1-day age bound")
-		require.FileExists(t, filepath.Join(dir, idxName("app", 2)),
-			"a fresh backup must survive the 1-day age bound")
-	})
-}
+var (
+	_ io.Writer = (*probe)(nil)
+)
 
 // tokenSeq backs uniqueToken.
 var tokenSeq atomic.Uint64
+
+type probe struct{ buf bytes.Buffer }
+
+// testRotatingFileHandlerSeedFromDisk verifies that a handler constructed when a
+// log file already exists on disk does not over-count. With the size properly
+// seeded, the first write appends to file 1, crosses the threshold, and advances
+// the internal index to 2. The second write then lands in file 2 — proving the
+// rotation was triggered on time. Without the seed, both writes would land in
+// file 1 (the counter would incorrectly start at 0).
+func testRotatingFileHandlerSeedFromDisk(t *testing.T) {
+	t.Parallel()
+
+	tmpFolder := t.TempDir()
+	prefix := "seed"
+	const maxCap uint32 = 20
+
+	// pre-create the target file (index 1) with content right at the capacity limit.
+	existingContent := bytes.Repeat([]byte("x"), int(maxCap))
+	firstFile := path.Join(tmpFolder, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
+	err := os.WriteFile(firstFile, existingContent, defaultFilePermissions)
+	require.NoError(t, err)
+
+	// constructing the handler should stat the file and seed fileSize from its real size.
+	h := RotatingFileHandler(tmpFolder, prefix, WithMaxFileSize(maxCap), WithMaxFiles(5))
+
+	// first write: appends to file 1, then detects fileSize > maxCap and advances index to 2.
+	_, err = h.Write([]byte("first"))
+	require.NoError(t, err)
+
+	// second write: must go to file 2 (index advanced by the first write's overflow).
+	_, err = h.Write([]byte("second"))
+	require.NoError(t, err)
+
+	files, err := extractFilesOrFail(tmpFolder)
+	require.NoError(t, err)
+
+	// file 2 must exist, proving the handler correctly detected overflow after seeding.
+	secondFileName := fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)
+	content, secondExists := files[secondFileName]
+	require.True(t, secondExists, "second file must exist after seeded overflow triggered rotation")
+	require.Contains(t, content, "second", "second write must land in file 2")
+}
+
+// testRotatingFileHandlerResumeHighestIndex proves that a handler constructed
+// against a folder holding several indices resumes at the highest one instead of
+// restarting at index 1 (the oldest file).
+func testRotatingFileHandlerResumeHighestIndex(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const prefix = "resume"
+
+	// pre-create indices 1..3, each below the cap so the first write appends to 3.
+	for _, i := range []int{1, 2, 3} {
+		p := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, i, defaultFileExtension))
+		require.NoError(t, os.WriteFile(p, []byte(fmt.Sprintf("old-%d\n", i)), defaultFilePermissions))
+	}
+
+	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(10))
+
+	marker := "resumed-write"
+	_, err := h.Write([]byte(marker))
+	require.NoError(t, err)
+
+	files, err := extractFilesOrFail(dir)
+	require.NoError(t, err)
+
+	// the write must land in index 3 (highest existing), not index 1.
+	third := fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)
+	require.Contains(t, files[third], marker, "write must append to the highest existing index")
+	first := fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)
+	require.NotContains(t, files[first], marker, "write must NOT land in the oldest file")
+}
+
+// testRotatingFileHandlerNoDeleteNewest proves that, after a simulated restart at
+// the max file count, a few writes do not prune the file holding the most recent
+// write — the defect the resume fix closes.
+func testRotatingFileHandlerNoDeleteNewest(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const prefix = "newest"
+	const maxFiles = 3
+
+	// pre-create indices 1..3 (at the maxFiles limit); index 3 is near the cap so
+	// the first write rotates into index 4.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)), []byte("aaa\n"), defaultFilePermissions))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)), []byte("bbb\n"), defaultFilePermissions))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)), bytes.Repeat([]byte("c"), 10), defaultFilePermissions))
+
+	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(8), WithMaxFiles(maxFiles))
+
+	// first write appends to index 3 (already >8 after seeding) → rotates to index 4.
+	_, err := h.Write([]byte("d"))
+	require.NoError(t, err)
+	// second write lands in index 4, the newest data.
+	newest := "the-newest-line"
+	_, err = h.Write([]byte(newest))
+	require.NoError(t, err)
+
+	files, err := extractFilesOrFail(dir)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(files), maxFiles, "pruning must keep at most maxFiles files")
+
+	fourth := fmt.Sprintf("%s.%08X.%s", prefix, 4, defaultFileExtension)
+	require.Contains(t, files, fourth, "the newest file must NOT be pruned")
+	require.Contains(t, files[fourth], newest, "the newest write must survive pruning")
+}
+
+// testRotatingFileHandlerRotateIntoPreexisting proves that when the handler
+// rotates into a pre-existing higher-index file, it seeds that file's size from
+// disk so the file does not grow to ~2× the cap before rotating again.
+func testRotatingFileHandlerRotateIntoPreexisting(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const prefix = "preexist"
+	const maxCap uint32 = 20
+
+	// index 1 is at the cap so the first write rotates into index 2.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)), bytes.Repeat([]byte("a"), int(maxCap)), defaultFilePermissions))
+	// index 2 already exists near the cap from a prior run.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)), bytes.Repeat([]byte("b"), int(maxCap)), defaultFilePermissions))
+
+	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(maxCap), WithMaxFiles(10))
+
+	// resume lands on index 2 (highest). It is already at the cap, so the first
+	// write overflows and rotates to index 3.
+	_, err := h.Write([]byte("first"))
+	require.NoError(t, err)
+	// the next write must land in index 3, proving index 2 was not allowed to grow
+	// to ~2× the cap (which would happen if its size were seeded as 0 on rotation).
+	_, err = h.Write([]byte("third-file-write"))
+	require.NoError(t, err)
+
+	files, err := extractFilesOrFail(dir)
+	require.NoError(t, err)
+	third := fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)
+	require.Contains(t, files, third, "rotation must reach index 3")
+	require.Contains(t, files[third], "third-file-write", "the write after overflow must land in index 3")
+}
+
+// testRotatingFileHandlerResumeToleratesForeign proves that foreign or malformed
+// filenames in the folder are ignored by the resume scan without panicking.
+func testRotatingFileHandlerResumeToleratesForeign(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const prefix = "mixed"
+
+	// a valid index-2 file plus assorted files the scan must skip.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)), []byte("valid\n"), defaultFilePermissions))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, prefix+".nothex."+defaultFileExtension), []byte("x\n"), defaultFilePermissions))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, prefix+".0000000000000005."+defaultFileExtension), []byte("too long\n"), defaultFilePermissions))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "foreign."+defaultFileExtension), []byte("other\n"), defaultFilePermissions))
+
+	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(10))
+
+	marker := "after-mixed"
+	_, err := h.Write([]byte(marker))
+	require.NoError(t, err)
+
+	files, err := extractFilesOrFail(dir)
+	require.NoError(t, err)
+	// resume must have picked index 2 (the only well-formed match), appending there.
+	second := fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)
+	require.Contains(t, files[second], marker, "write must append to the only valid index")
+}
+
+// testRotatingFileHandlerResumeGlobMeta proves the resume scan is not corrupted by glob
+// metacharacters in the prefix: filepath.Glob is fed the literal "*.log" and the prefix
+// is matched with a plain HasPrefix, so a prefix like "app[v1]" still resumes at the
+// highest existing index instead of silently misfiring back to index 1 (which would leave
+// the newest file as the prune-first orphan — the exact bug the resume logic prevents).
+func testRotatingFileHandlerResumeGlobMeta(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	const prefix = "app[v1]" // '[' and ']' are glob metacharacters
+
+	third := fmt.Sprintf("%s.%08X.%s", prefix, 3, defaultFileExtension)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, third), []byte("old\n"), defaultFilePermissions))
+
+	h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(10))
+
+	marker := "after-restart"
+	_, err := h.Write([]byte(marker))
+	require.NoError(t, err)
+
+	files, err := extractFilesOrFail(dir)
+	require.NoError(t, err)
+	require.Contains(t, files[third], marker, "write must append to the resumed highest index despite metacharacters")
+	_, hasIndex1 := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+	require.False(t, hasIndex1, "resume must not have created a fresh index-1 file")
+}
+
+// errWriter is an io.Writer that always returns an error.
+
+func testRotatingFileHandlerFreshStart(t *testing.T) {
+	t.Parallel()
+
+	const prefix = "reset"
+
+	t.Run("removes existing ring files at construction", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		// pre-populate several ring files — a prior run that rotated past index 1.
+		firstFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
+		secondFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension))
+		require.NoError(t, os.WriteFile(firstFile, bytes.Repeat([]byte("x"), 50), defaultFilePermissions))
+		require.NoError(t, os.WriteFile(secondFile, bytes.Repeat([]byte("y"), 50), defaultFilePermissions))
+
+		// construct the handler — removal must happen here, before any Write. The whole
+		// ring is cleared, not just index-1 truncated, so no stale file survives to be
+		// appended onto or pruned ahead of the fresh writes.
+		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(5), WithFreshStart())
+
+		_, err := os.Stat(firstFile)
+		require.ErrorIs(t, err, os.ErrNotExist, "index-1 file must be removed at construction")
+		_, err = os.Stat(secondFile)
+		require.ErrorIs(t, err, os.ErrNotExist, "stale higher-index file must be removed at construction")
+
+		// now write something and assert only the new content is present, at index 1.
+		_, err = h.Write([]byte("first"))
+		require.NoError(t, err)
+
+		files, err := extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+		require.True(t, ok)
+		require.Equal(t, "first\n", content, "only the fresh write must be present; old content must be gone")
+	})
+
+	t.Run("no existing file is a no-op", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		// no pre-existing files.
+		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(1024), WithMaxFiles(5), WithFreshStart())
+
+		// resetRotation only removes matching files; it never creates the index-1
+		// file, so construction must not create it when none existed — the base
+		// handler creates it on the first write, and this handler must match that.
+		firstFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
+		_, err := os.Stat(firstFile)
+		require.ErrorIs(t, err, os.ErrNotExist, "construction must not create the index-1 file when none existed")
+
+		_, err = h.Write([]byte("hello"))
+		require.NoError(t, err)
+
+		files, err := extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+		require.True(t, ok)
+		require.Equal(t, "hello\n", content)
+	})
+
+	t.Run("rotation and prune still apply", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		// maxFileSize=7 triggers rotation after ~7 bytes; maxFiles=2.
+		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(7), WithMaxFiles(2), WithFreshStart())
+
+		// write 1: "111\n" = 4 bytes, file 1 size = 4 (no rotation).
+		_, err := h.Write(bytes.Repeat([]byte("1"), 3))
+		require.NoError(t, err)
+		files, err := extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+
+		// write 2: "22\n" = 3 bytes, file 1 total = 7 (no rotation yet — threshold is >7, not >=7).
+		_, err = h.Write(bytes.Repeat([]byte("2"), 2))
+		require.NoError(t, err)
+		files, err = extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+		require.True(t, ok)
+		require.Equal(t, "111\n22\n", content)
+
+		// write 3: "3\n" = 2 bytes, file 1 total = 9 > 7 → index advances to 2.
+		// the write itself still goes to file 1; file 2 appears only on the next write.
+		_, err = h.Write([]byte("3"))
+		require.NoError(t, err)
+		files, err = extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 1, "rotation advances the index but file 2 is only created on the next write")
+		content, ok = files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+		require.True(t, ok)
+		require.Equal(t, "111\n22\n3\n", content)
+
+		// write 4 goes to file 2 (index advanced after write 3).
+		_, err = h.Write([]byte("4"))
+		require.NoError(t, err)
+		files, err = extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 2, "file 2 must exist after the first write following rotation")
+		_, hasFile2 := files[fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)]
+		require.True(t, hasFile2, "file 2 must have been created")
+
+		// write several more to force prune: maxFiles=2 so file 1 is pruned once file 3 exists.
+		_, err = h.Write(bytes.Repeat([]byte("5"), 10))
+		require.NoError(t, err)
+		_, err = h.Write(bytes.Repeat([]byte("6"), 10))
+		require.NoError(t, err)
+		files, err = extractFilesOrFail(dir)
+		require.NoError(t, err)
+		require.Len(t, files, 2, "pruning must keep at most maxFiles files")
+		_, hasFile1 := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+		require.False(t, hasFile1, "file 1 must have been pruned")
+	})
+
+	t.Run("seeded size resets to zero", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		const maxCap uint32 = 20
+
+		// pre-create index-1 file at exactly maxCap bytes — without fresh start, this
+		// seeds the counter at maxCap and the first write would trigger rotation.
+		firstFile := filepath.Join(dir, fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension))
+		err := os.WriteFile(firstFile, bytes.Repeat([]byte("x"), int(maxCap)), defaultFilePermissions)
+		require.NoError(t, err)
+
+		// with fresh start the ring is cleared, so the seeded counter must be 0.
+		h := RotatingFileHandler(dir, prefix, WithMaxFileSize(maxCap), WithMaxFiles(5), WithFreshStart())
+
+		// a small write must NOT trigger rotation (seeded size was 0, not maxCap).
+		_, err = h.Write([]byte("small"))
+		require.NoError(t, err)
+
+		files, err := extractFilesOrFail(dir)
+		require.NoError(t, err)
+
+		// index must stay at 1 — no rotation occurred.
+		_, hasFile2 := files[fmt.Sprintf("%s.%08X.%s", prefix, 2, defaultFileExtension)]
+		require.False(t, hasFile2, "no rotation must have occurred because seeded size was 0 after fresh start")
+
+		content, ok := files[fmt.Sprintf("%s.%08X.%s", prefix, 1, defaultFileExtension)]
+		require.True(t, ok)
+		require.Equal(t, "small\n", content, "file 1 must contain only the fresh write after fresh start")
+	})
+}
+
+func extractFilesOrFail(folder string) (map[string]string, error) {
+	files, err := filepath.Glob(path.Join(folder, "*."+defaultFileExtension))
+	if err != nil || len(files) == 0 {
+		return nil, err
+	}
+	r := make(map[string]string, 0)
+	for _, filePath := range files {
+		b, e := os.ReadFile(filePath)
+		if runtime.GOOS == "windows" && strings.Contains(filePath, "\\") {
+			// in some cases the filepath library is not able to handle the backslashes correctly
+			// so we need to replace them with forward slashes
+			filePath = strings.ReplaceAll(filePath, "\\", "/")
+		}
+		filePath = path.Base(filePath)
+		if e != nil {
+			r[filePath] = e.Error()
+		} else {
+			r[filePath] = string(b)
+		}
+	}
+	return r, nil
+}
+
+func (p *probe) Write(b []byte) (int, error) { return p.buf.Write(b) }
+func (p *probe) String() string              { return p.buf.String() }
+
+// readGzOrFail decompresses a gzip file and returns its plaintext, failing the test on
+// any error. Compression tests decompress and compare bytes because an existence-only
+// check would pass a rename-that-forgot-to-gzip bug.
+func readGzOrFail(t *testing.T, filePath string) string {
+	t.Helper()
+	f, err := os.Open(filePath)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	zr, err := gzip.NewReader(f)
+	require.NoError(t, err)
+	defer func() { _ = zr.Close() }()
+	b, err := io.ReadAll(zr)
+	require.NoError(t, err)
+	return string(b)
+}
+
+// extractFilesWithGzOrFail is the .gz-aware sibling of extractFilesOrFail: it maps every
+// *.log to its raw bytes and every *.log.gz to its DECOMPRESSED plaintext, keyed by base
+// name. The plain helper globs only *.log and is blind to compressed backups.
+func extractFilesWithGzOrFail(t *testing.T, folder string) map[string]string {
+	t.Helper()
+	r := make(map[string]string)
+
+	logs, err := filepath.Glob(filepath.Join(folder, "*."+defaultFileExtension))
+	require.NoError(t, err)
+	for _, p := range logs {
+		b, e := os.ReadFile(p)
+		require.NoError(t, e)
+		r[filepath.Base(p)] = string(b)
+	}
+
+	gzs, err := filepath.Glob(filepath.Join(folder, "*."+defaultFileExtension+"."+gzipExtension))
+	require.NoError(t, err)
+	for _, p := range gzs {
+		r[filepath.Base(p)] = readGzOrFail(t, p)
+	}
+	return r
+}
+
+// writeRotating writes s through h and asserts no error, keeping the option tests terse.
+func writeRotating(t *testing.T, h io.Writer, s string) {
+	t.Helper()
+	_, err := h.Write([]byte(s))
+	require.NoError(t, err)
+}
+
+// touchOld writes content to path and backdates its mtime by age, for deterministic
+// age-prune tests (mtime is real filesystem data, so no clock seam is needed).
+func touchOld(t *testing.T, filePath, content string, age time.Duration) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filePath, []byte(content), defaultFilePermissions))
+	when := time.Now().Add(-age)
+	require.NoError(t, os.Chtimes(filePath, when, when))
+}
+
+func idxName(prefix string, index int) string {
+	return fmt.Sprintf("%s.%08X.%s", prefix, index, defaultFileExtension)
+}
 
 // uniqueToken returns a short, process-unique string for test data.
 func uniqueToken() string {

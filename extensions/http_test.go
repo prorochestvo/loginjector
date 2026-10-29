@@ -23,6 +23,8 @@ import (
 var _ httpx.Tap = (*accessResponseWriter)(nil)
 var _ http.ResponseWriter = (*accessResponseWriter)(nil)
 
+const logLevelInfo loginjector.LogLevel = 1
+
 // TestNewAccessHandler exercises NewAccessHandler across all enumerated scenarios.
 func TestNewAccessHandler(t *testing.T) {
 	t.Parallel()
@@ -633,5 +635,3 @@ func newAccessRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffe
 	l := loginjector.NewLogger(logLevelInfo, lw)
 	return l, buf
 }
-
-const logLevelInfo loginjector.LogLevel = 1

@@ -13,11 +13,85 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var _ io.Writer = (*errWriter)(nil)
+func TestTimestampedHandler(t *testing.T) {
+	t.Parallel()
 
-type errWriter struct{ err error }
+	fixedTime := time.Date(2024, 3, 15, 10, 30, 45, 0, time.UTC)
+	fixedClock := withClock(func() time.Time { return fixedTime })
+	tsPrefix := "2024/03/15 10:30:45"
+	indent := strings.Repeat(" ", len(tsPrefix)+1)
 
-func (e *errWriter) Write(_ []byte) (int, error) { return 0, e.err }
+	t.Run("single line forwarded to inner", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		h := TimestampedHandler(&buf, fixedClock)
+		_, err := h.Write([]byte("hello"))
+		require.NoError(t, err)
+		require.Equal(t, tsPrefix+" hello\n", buf.String())
+	})
+
+	t.Run("multiline indents continuation lines", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		h := TimestampedHandler(&buf, fixedClock)
+		_, err := h.Write([]byte("line1\nline2\nline3"))
+		require.NoError(t, err)
+		want := tsPrefix + " line1\n" + indent + "line2\n" + indent + "line3\n"
+		require.Equal(t, want, buf.String())
+	})
+
+	t.Run("byte-for-byte match with TimestampedPrintHandler", func(t *testing.T) {
+		t.Parallel()
+
+		// the decorator over a buffer must render identically to the stdout printer
+		// pointed at the same buffer via WithOutput — only the sink differs.
+		for _, in := range []string{"hello", "a\nb\nc", "a\n\nb", "", "   \n  ", "trailing\n"} {
+			var decorated, printer bytes.Buffer
+			hDec := TimestampedHandler(&decorated, fixedClock)
+			hPrint := TimestampedPrintHandler(fixedClock, WithOutput(&printer))
+			_, err := hDec.Write([]byte(in))
+			require.NoError(t, err)
+			_, err = hPrint.Write([]byte(in))
+			require.NoError(t, err)
+			require.Equal(t, printer.String(), decorated.String(), "input %q must render identically", in)
+		}
+	})
+
+	t.Run("WithOutput is ignored; inner is the sink", func(t *testing.T) {
+		t.Parallel()
+
+		var inner, redirect bytes.Buffer
+		h := TimestampedHandler(&inner, fixedClock, WithOutput(&redirect))
+		_, err := h.Write([]byte("payload"))
+		require.NoError(t, err)
+		require.Equal(t, tsPrefix+" payload\n", inner.String(), "output must go to inner, not WithOutput")
+		require.Empty(t, redirect.String(), "WithOutput must be ignored by TimestampedHandler")
+	})
+
+	t.Run("sink error surfaced", func(t *testing.T) {
+		t.Parallel()
+
+		want := errors.New("disk full")
+		h := TimestampedHandler(&errWriter{err: want}, fixedClock)
+		_, err := h.Write([]byte("boom"))
+		require.ErrorIs(t, err, want)
+	})
+	t.Run("no doubled timestamp with Logger.StdLog", func(t *testing.T) {
+		t.Parallel()
+
+		var output bytes.Buffer
+		inner := TimestampedHandler(&output, fixedClock)
+		logger := loginjector.NewLogger(1, inner)
+		logger.StdLog(1, "sqlite ").Printf("query ran")
+
+		want := "2024/03/15 10:30:45 sqlite query ran\n"
+		require.Equal(t, want, output.String())
+		require.Equal(t, 1, strings.Count(output.String(), "2024/03/15 10:30:45"))
+	})
+
+}
 
 func TestTimestampedPrintHandler(t *testing.T) {
 	t.Parallel()
@@ -113,86 +187,6 @@ func TestTimestampedPrintHandler(t *testing.T) {
 	})
 }
 
-func TestTimestampedHandler(t *testing.T) {
-	t.Parallel()
-
-	fixedTime := time.Date(2024, 3, 15, 10, 30, 45, 0, time.UTC)
-	fixedClock := withClock(func() time.Time { return fixedTime })
-	tsPrefix := "2024/03/15 10:30:45"
-	indent := strings.Repeat(" ", len(tsPrefix)+1)
-
-	t.Run("single line forwarded to inner", func(t *testing.T) {
-		t.Parallel()
-
-		var buf bytes.Buffer
-		h := TimestampedHandler(&buf, fixedClock)
-		_, err := h.Write([]byte("hello"))
-		require.NoError(t, err)
-		require.Equal(t, tsPrefix+" hello\n", buf.String())
-	})
-
-	t.Run("multiline indents continuation lines", func(t *testing.T) {
-		t.Parallel()
-
-		var buf bytes.Buffer
-		h := TimestampedHandler(&buf, fixedClock)
-		_, err := h.Write([]byte("line1\nline2\nline3"))
-		require.NoError(t, err)
-		want := tsPrefix + " line1\n" + indent + "line2\n" + indent + "line3\n"
-		require.Equal(t, want, buf.String())
-	})
-
-	t.Run("byte-for-byte match with TimestampedPrintHandler", func(t *testing.T) {
-		t.Parallel()
-
-		// the decorator over a buffer must render identically to the stdout printer
-		// pointed at the same buffer via WithOutput — only the sink differs.
-		for _, in := range []string{"hello", "a\nb\nc", "a\n\nb", "", "   \n  ", "trailing\n"} {
-			var decorated, printer bytes.Buffer
-			hDec := TimestampedHandler(&decorated, fixedClock)
-			hPrint := TimestampedPrintHandler(fixedClock, WithOutput(&printer))
-			_, err := hDec.Write([]byte(in))
-			require.NoError(t, err)
-			_, err = hPrint.Write([]byte(in))
-			require.NoError(t, err)
-			require.Equal(t, printer.String(), decorated.String(), "input %q must render identically", in)
-		}
-	})
-
-	t.Run("WithOutput is ignored; inner is the sink", func(t *testing.T) {
-		t.Parallel()
-
-		var inner, redirect bytes.Buffer
-		h := TimestampedHandler(&inner, fixedClock, WithOutput(&redirect))
-		_, err := h.Write([]byte("payload"))
-		require.NoError(t, err)
-		require.Equal(t, tsPrefix+" payload\n", inner.String(), "output must go to inner, not WithOutput")
-		require.Empty(t, redirect.String(), "WithOutput must be ignored by TimestampedHandler")
-	})
-
-	t.Run("sink error surfaced", func(t *testing.T) {
-		t.Parallel()
-
-		want := errors.New("disk full")
-		h := TimestampedHandler(&errWriter{err: want}, fixedClock)
-		_, err := h.Write([]byte("boom"))
-		require.ErrorIs(t, err, want)
-	})
-	t.Run("no doubled timestamp with Logger.StdLog", func(t *testing.T) {
-		t.Parallel()
-
-		var output bytes.Buffer
-		inner := TimestampedHandler(&output, fixedClock)
-		logger := loginjector.NewLogger(1, inner)
-		logger.StdLog(1, "sqlite ").Printf("query ran")
-
-		want := "2024/03/15 10:30:45 sqlite query ran\n"
-		require.Equal(t, want, output.String())
-		require.Equal(t, 1, strings.Count(output.String(), "2024/03/15 10:30:45"))
-	})
-
-}
-
 //nolint:paralleltest // captureStdout redirects the process-global os.Stdout
 func TestPrintHandler(t *testing.T) {
 	// serial: captureStdout redirects the process-global os.Stdout.
@@ -205,6 +199,12 @@ func TestPrintHandler(t *testing.T) {
 	})
 	require.Equal(t, m+"\n", out, "PrintHandler must write a trimmed line to stdout")
 }
+
+var _ io.Writer = (*errWriter)(nil)
+
+type errWriter struct{ err error }
+
+func (e *errWriter) Write(_ []byte) (int, error) { return 0, e.err }
 
 // captureStdout redirects os.Stdout for a single test callback.
 func captureStdout(t *testing.T, fn func()) string {
