@@ -19,7 +19,13 @@ import (
 func ExampleNewAccessHandler() {
 	// access.log stays at a fixed path so `tail -F access.log` follows it across rotations;
 	// rotated backups are indexed, gzipped, and pruned once older than two weeks.
-	out := extensions.RotatingFileHandler("./logs", "access", extensions.WithStableCurrentName(), extensions.WithMaxAge(14*24*time.Hour), extensions.WithCompress())
+	out := extensions.RotatingFileHandler(
+		"./logs",
+		"access",
+		extensions.WithStableCurrentName(),
+		extensions.WithMaxAge(14*24*time.Hour),
+		extensions.WithCompress(),
+	)
 
 	app := func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))

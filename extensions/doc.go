@@ -2,7 +2,7 @@
 // Sink factories return mutex-guarded io.Writer values.
 //
 // RotatingFileHandler and FileByFormatHandler rotate files by size or generated name.
-// RotatingFileHandler can also rotate by age and compress backups. NewFileLogger
+// RotatingFileHandler can also prune backups by age and compress them. NewFileLogger
 // attaches a timestamped stdout printer by default.
 //
 // Print handlers include PrintHandler for plain stdout lines,
