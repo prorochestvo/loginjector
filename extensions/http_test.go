@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/prorochestvo/loginjector"
-	"github.com/prorochestvo/loginjector/httptap"
 	"github.com/prorochestvo/loginjector/internal/httpx"
 
 	"github.com/stretchr/testify/assert"
@@ -457,7 +456,7 @@ func TestNewAccessHandler(t *testing.T) {
 			}
 		}
 
-		recoverH := httptap.NewRecoverHandler(l, logLevelInfo, next)
+		recoverH := NewRecoverHandler(l, logLevelInfo, next)
 		accessH := NewAccessHandler(&accessBuf, recoverH)
 
 		rec := httptest.NewRecorder()

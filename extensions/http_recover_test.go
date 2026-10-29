@@ -1,4 +1,4 @@
-package httptap
+package extensions
 
 import (
 	"bytes"
@@ -761,17 +761,4 @@ func TestNewRecoverHandler(t *testing.T) {
 		require.Equal(t, "partial", fw.Body.String())
 		require.Contains(t, logBuf.String(), "panic:")
 	})
-}
-
-// lockedWriter is a thread-safe io.Writer used in the race subtest to prevent
-// data races on a shared writer from masking handler-level races.
-type lockedWriter struct {
-	mu sync.Mutex
-	w  interface{ Write([]byte) (int, error) }
-}
-
-func (l *lockedWriter) Write(b []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.w.Write(b)
 }

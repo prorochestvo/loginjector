@@ -1,4 +1,4 @@
-package httptap
+package extensions
 
 import (
 	"fmt"
