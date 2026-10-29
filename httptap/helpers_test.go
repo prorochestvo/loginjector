@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector"
 )
 
 // logLevelInfo is a package-wide test fixture used across httptap tests.

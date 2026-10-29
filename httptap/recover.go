@@ -9,7 +9,7 @@ import (
 
 	"github.com/prorochestvo/loginjector/internal/httpx"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector"
 )
 
 // NewRecoverHandler returns an HTTP middleware that recovers any panic in next,
@@ -337,5 +337,3 @@ func replaceHeader(dst, src http.Header) {
 		dst[k] = append([]string(nil), v...)
 	}
 }
-
-var _ http.ResponseWriter = (*recoverResponseWriter)(nil)

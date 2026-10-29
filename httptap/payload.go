@@ -10,7 +10,7 @@ import (
 
 	"github.com/prorochestvo/loginjector/internal/httpx"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector"
 )
 
 // payloadConfig holds all tunables for NewPayloadHandlerWithOptions.
