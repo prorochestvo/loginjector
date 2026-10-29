@@ -9,8 +9,8 @@ documented in that release's `BREAKING CHANGES` section.
 
 ### **BREAKING CHANGES**
 
-The package layout now separates the core logger from optional sinks and helpers. These
-released APIs move without root-package forwarders; update imports at each call site.
+The package layout now separates the core logger from optional sinks and helpers. These released
+APIs move without root-package forwarders; update imports at each call site.
 
 | Old | New |
 |---|---|
@@ -56,111 +56,121 @@ released APIs move without root-package forwarders; update imports at each call 
 `httptap: out is nil` and `httptap: next is nil` to `loginjector: out is nil` and
 `loginjector: next is nil`.
 
+The `github.com/prorochestvo/loginjector/levels` import path is now
+`github.com/prorochestvo/loginjector/adapters`. File, print, Telegram, and access factories now
+live under `github.com/prorochestvo/loginjector/extensions`.
+
 ### Added
 
-- `LevelWriter` for sinks that need the message severity, and the opt-in Axiom sink, exposed as `extensions.NewAxiomHandler`, for asynchronous Axiom ingest. It accepts `extensions.AxiomToken` and `extensions.AxiomDataset` values.
+- `LevelWriter` for sinks that need the message severity, and the opt-in Axiom sink, exposed
+  as `extensions.NewAxiomHandler`, for asynchronous Axiom ingest. It accepts
+  `extensions.AxiomToken` and `extensions.AxiomDataset` values.
 - `httptap.WithRedactQueryParams(names...)` — additive-only option for
   `httptap.NewPayloadHandlerWithOptions` to redact query-parameter values. The default set
   (`access_token`, `refresh_token`, `id_token`, `client_secret`, `api_key`, `apikey`,
-  `password`) is always applied and cannot be removed; additional parameter names are
-  added (case-insensitive).
+  `password`) is always applied and cannot be removed; additional parameter names are added
+  (case-insensitive).
 
 ### Changed
 
-- Existing sinks that define `WriteLevel(LogLevel, []byte)` are now called through `LevelWriter`.
+- Existing sinks that define `WriteLevel(LogLevel, []byte)` are now called through
+  `LevelWriter`.
 - Access line, payload request line, and payload summary: ASCII control bytes, C1 controls
   (U+0080-U+009F), U+2028, U+2029, and invalid UTF-8 bytes in the path (and the payload query)
   are percent-encoded per byte (`%0A`); other paths are byte-identical.
-- Payload response line shows the first final status (`201 Created` after
-  `WriteHeader(201)`, `WriteHeader(500)`), not the last attempted one.
+- Payload response line shows the first final status (`201 Created` after `WriteHeader(201)`,
+  `WriteHeader(500)`), not the last attempted one.
 - `extensions.NewAccessHandler` logs `[200]` for handlers that return without writing; `[000]`
   remains for hijacked or panicked requests.
 - `httptap.NewRecoverHandler` sends 1xx responses (for example 103 Early Hints) immediately
   instead of treating them as the final status.
 - `httptap.NewRecoverHandler`: `Flush` commits the buffered response; a panic after a commit
-  is logged and re-panicked as `http.ErrAbortHandler`, so an outer recover middleware
-  now sees `http.ErrAbortHandler` after a `Flush` instead of a 500 being written.
+  is logged and re-panicked as `http.ErrAbortHandler`, so an outer recover middleware now sees
+  `http.ErrAbortHandler` after a `Flush` instead of a 500 being written.
 - `Logger.WriteLog` releases the logger lock before writing to sinks; a call already in
   progress may still reach a hook removed, or use a level changed, after `Unhook`/`SetMinLevel`
-  returned. `Unhook` and `SetMinLevel` only guarantee that WriteLog calls *starting* after
-  they return observe the change.
+  returned. `Unhook` and `SetMinLevel` only guarantee that WriteLog calls *starting* after they
+  return observe the change.
 - A panic in a handler or hook is recovered and returned as an error (including with a single
-  matching sink, which previously propagated the panic). A panicking factory sink is named
-  by its concrete type, `*sink.Func`. The error message names the sink's
-  type, wraps the panic value, and carries the stack trace; a one-line notice naming the sink
-  type and the panic value is also written to stderr. Callers going through std `log` (which
-  discards `Write` errors) see the panic only on stderr.
+  matching sink, which previously propagated the panic). A sink created by a factory is reported
+  by its own type name. The error message names the sink's type, wraps the panic value, and
+  carries the stack trace; a one-line notice naming the sink type and the panic value is also
+  written to stderr. Callers going through std `log` (which discards `Write` errors) see the
+  panic only on stderr.
 - `Logger.Write` and `WriterAs(level).Write` report `len(p)` for messages filtered below the
-  threshold, as the `io.Writer` contract requires; `WriteLog` still returns 0 for "no sink matched".
-- `adapters.CloseOrPanic` and `adapters.CloseOrLog` treat a nil closer as a no-op, matching `adapters.CloseOrLogError`
-  and `adapters.CloseOrJoin`.
+  threshold, as the `io.Writer` contract requires; `WriteLog` still returns 0 for "no sink
+  matched".
+- `adapters.CloseOrPanic` and `adapters.CloseOrLog` treat a nil closer as a no-op, matching
+  `adapters.CloseOrLogError` and `adapters.CloseOrJoin`.
 - Registrations of the same pointer sink on one logger (directly, via `WithMinLevel`, or as a
   hook) now share one mutex: they serialize, and such a sink must not log into another
   registration of itself (that now deadlocks, documented in the re-entrancy contract). The
   logger keeps every registered pointer sink reachable for its lifetime.
-- `extensions.TelegramHandler` no longer prints a response-body close error to std `log`; the close
-  error is dropped.
-- `extensions.TelegramHandler` now wraps its multipart-construction errors with `%w` instead of `%s`.
-  The error messages are byte-identical; `errors.Is`/`errors.As` can now reach the
-  underlying error. Errors that carry the redacted bot-token URL are unchanged and still
-  do not wrap the original error.
-- `extensions.WithMaxFiles`, `extensions.WithMaxFilesInFolder`, and `extensions.FileByFormatHandler`'s `maxFilesInFolder` treat
-  values below 1 as 1 instead of deleting every file.
-- `extensions.RotatingFileHandler` and `extensions.FileByFormatHandler` report a close, rotation, or prune error that
-  follows a full write with `n == len(p)` and the non-nil error.
-- With `extensions.WithMaxAge`, the backup produced by a rotation is no longer aged out by that same
-  rotation; it becomes eligible on the next rotation.
-- `extensions.FileByFormatHandler` rejects generated names that are empty, `.`, `..`, or contain a path
-  separator: `Write` returns 0 and an error and creates nothing. Previously an empty name wrote
-  a hidden `.log` file and a name such as `2026/10/22` wrote into an existing subfolder.
-  Migration: give each subfolder its own handler, or generate a flat name such as
+- `extensions.TelegramHandler` no longer prints a response-body close error to std `log`; the
+  close error is dropped.
+- `extensions.TelegramHandler` now wraps its multipart-construction errors with `%w` instead
+  of `%s`. The error messages are byte-identical; `errors.Is`/`errors.As` can now reach the
+  underlying error. Errors that carry the redacted bot-token URL are unchanged and still do not
+  wrap the original error.
+- `extensions.WithMaxFiles`, `extensions.WithMaxFilesInFolder`, and
+  `extensions.FileByFormatHandler`'s `maxFilesInFolder` treat values below 1 as 1 instead of
+  deleting every file.
+- `extensions.RotatingFileHandler` and `extensions.FileByFormatHandler` report a close,
+  rotation, or prune error that follows a full write with `n == len(p)` and the non-nil error.
+- With `extensions.WithMaxAge`, the backup produced by a rotation is no longer aged out by
+  that same rotation; it becomes eligible on the next rotation.
+- `extensions.FileByFormatHandler` rejects generated names that are empty, `.`, `..`, or
+  contain a path separator: `Write` returns 0 and an error and creates nothing. Previously an
+  empty name wrote a hidden `.log` file and a name such as `2026/10/22` wrote into an existing
+  subfolder. Migration: give each subfolder its own handler, or generate a flat name such as
   `2026-10-22`. On Windows, reserved device names such as `NUL` or `COM1` are also rejected.
 - Directory-listing errors other than a missing folder (for example a folder that is writable
-  but not readable) are now returned instead of ignored: by `extensions.RotatingFileHandler` on the first
-  write and on each rotation, and by `extensions.FileByFormatHandler` on each prune (when the generated
-  name changes). When the line itself was written, `Write` returns the error with
-  `n == len(p)`. Previously such errors were dropped and retention silently stopped.
+  but not readable) are now returned instead of ignored: by `extensions.RotatingFileHandler` on
+  the first write and on each rotation, and by `extensions.FileByFormatHandler` on each prune
+  (when the generated name changes). When the line itself was written, `Write` returns the error
+  with `n == len(p)`. Previously such errors were dropped and retention silently stopped.
 
 ### Fixed
 
 - `httptap.NewRecoverHandler` sent `WriteHeader(404)` + `Flush` as status 200.
 - `httptap.NewRecoverHandler` dropped header deletions on commit.
 - `httptap.NewRecoverHandler` did not freeze headers at `WriteHeader`.
-- `extensions.NewAccessHandler` and `httptap.NewPayloadHandlerWithOptions` treated 1xx informational responses
-  as final status.
-- `httptap.NewRecoverHandler` sent a declared trailer (`Trailer: X-Checksum`, value set after `Write`)
-  as a response header as well as a trailer; it now goes out only as a trailer.
-- A hook or handler calling `Hook`, `Unhook`, or `SetMinLevel` from its `Write` deadlocked;
-  a pending `Hook`/`Unhook`/`SetMinLevel` blocked all logging until the slowest sink returned.
-- A panicking sink crashed the process when two or more sinks matched; the process stayed alive
-  with a single matching sink only if the caller recovered the panic.
-- `extensions.TelegramHandler` could deadlock when std `log` output was routed through the logger and
-  the handler tried to report a close error via `adapters.CloseOrLog`.
-- `extensions.RotatingFileHandler` without options pruned every `*.log` file in its folder, whatever
-  its name, when the file count exceeded `extensions.WithMaxFiles` — deleting log files of other
-  components and the live file of another handler sharing the folder (including
-  `extensions.NewFileLogger` without age or compression options). Pruning now counts and removes only the
-  handler's own `prefix.<8 hex>.log` files. `extensions.FileByFormatHandler` keeps whole-folder
-  pruning by contract; its godoc now says so.
+- `extensions.NewAccessHandler` and `httptap.NewPayloadHandlerWithOptions` treated 1xx
+  informational responses as final status.
+- `httptap.NewRecoverHandler` sent a declared trailer (`Trailer: X-Checksum`, value set after
+  `Write`) as a response header as well as a trailer; it now goes out only as a trailer.
+- A hook or handler calling `Hook`, `Unhook`, or `SetMinLevel` from its `Write` deadlocked; a
+  pending `Hook`/`Unhook`/`SetMinLevel` blocked all logging until the slowest sink returned.
+- A panicking sink crashed the process when two or more sinks matched; the process stayed
+  alive with a single matching sink only if the caller recovered the panic.
+- `extensions.TelegramHandler` could deadlock when std `log` output was routed through the
+  logger and the handler tried to report a close error via `adapters.CloseOrLog`.
+- `extensions.RotatingFileHandler` without options pruned every `*.log` file in its folder,
+  whatever its name, when the file count exceeded `extensions.WithMaxFiles` — deleting log files
+  of other components and the live file of another handler sharing the folder (including
+  `extensions.NewFileLogger` without age or compression options). Pruning now counts and removes
+  only the handler's own `prefix.<8 hex>.log` files. `extensions.FileByFormatHandler` keeps
+  whole-folder pruning by contract; its godoc now says so.
 - `Logger.Unhook` panicked (`makeslice: cap out of range`) on a logger with no hooks, e.g.
   when the same hook was removed twice.
 - `Logger.Write` read the minimum level without the lock, a data race with a concurrent
   `SetMinLevel`.
-- `extensions.RotatingFileHandler` rotation scans no longer interpret glob metacharacters in the folder
-  path: a folder such as `logs/app[1]` no longer resumes from, prunes, or fresh-start-deletes
-  files in `logs/app1`, and `logs/app[` no longer fails every rotation.
-- With `extensions.WithMaxFiles(1)` and `extensions.WithCompress`, `extensions.WithStableCurrentName`, or `extensions.WithMaxAge`, the
-  backup holding the rotation-triggering write is no longer deleted, including when the
-  rotation moves into a pre-existing higher-index file.
-- `extensions.FileByFormatHandler` no longer writes outside its folder when the generator returns a name
-  such as `../x`, and never prunes the file it has just written, including when a
+- `extensions.RotatingFileHandler` rotation scans no longer interpret glob metacharacters in
+  the folder path: a folder such as `logs/app[1]` no longer resumes from, prunes, or
+  fresh-start-deletes files in `logs/app1`, and `logs/app[` no longer fails every rotation.
+- With `extensions.WithMaxFiles(1)` and `extensions.WithCompress`,
+  `extensions.WithStableCurrentName`, or `extensions.WithMaxAge`, the backup holding the
+  rotation-triggering write is no longer deleted, including when the rotation moves into a
+  pre-existing higher-index file.
+- `extensions.FileByFormatHandler` no longer writes outside its folder when the generator
+  returns a name such as `../x`, and never prunes the file it has just written, including when a
   differently-cased generated name resolves to the same file on a case-insensitive filesystem.
-- `extensions.RotatingFileHandler` and `extensions.FileByFormatHandler` return `len(p)` after a full write and 0 on a
-  failed write, per the `io.Writer` contract (previously `len(TrimSpace(p))+1`); each line is
-  written with a single write call. As a side effect, a line and its newline are no longer
-  split across two writes.
-- `extensions.NewFileLogger` no longer changes the permissions of a pre-existing folder; it sets 0750 only
-  on a folder it creates and on the temp-fallback folder.
+- `extensions.RotatingFileHandler` and `extensions.FileByFormatHandler` return `len(p)` after
+  a full write and 0 on a failed write, per the `io.Writer` contract (previously
+  `len(TrimSpace(p))+1`); each line is written with a single write call. As a side effect, a
+  line and its newline are no longer split across two writes.
+- `extensions.NewFileLogger` no longer changes the permissions of a pre-existing folder; it
+  sets 0750 only on a folder it creates and on the temp-fallback folder.
 
 ### Security
 
@@ -168,12 +178,13 @@ released APIs move without root-package forwarders; update imports at each call 
   `X-Api-Key`, `X-Auth-Token`, and credential query parameters (`access_token`, `refresh_token`,
   `id_token`, `client_secret`, `api_key`, `apikey`, `password`). Payload query parameters in
   that set are logged as `name=[REDACTED]`, and matching header lines are omitted; options
-  cannot disable these defaults. Control characters can no longer forge log lines through the path. Note: header values (including `Referer` and
-  `Location`, which can carry OAuth `code` / `access_token`) are not redacted or escaped.
-- `extensions.NewFileLogger` with `extensions.WithTempDirFallback` no longer adopts an existing
-  `filepath.Join(os.TempDir(), "logs")` that is a symlink, is not a directory, or (on Unix) is
-  owned by another user; it returns an error instead of changing the permissions of the link
-  target and writing logs into it.
+  cannot disable these defaults. Control characters can no longer forge log lines through the
+  path. Note: header values (including `Referer` and `Location`, which can carry OAuth `code` /
+  `access_token`) are not redacted or escaped.
+- `extensions.NewFileLogger` with `extensions.WithTempDirFallback` no longer adopts an
+  existing `filepath.Join(os.TempDir(), "logs")` that is a symlink, is not a directory, or (on
+  Unix) is owned by another user; it returns an error instead of changing the permissions of the
+  link target and writing logs into it.
 
 ## [1.0.9] - 2026-07-22
 

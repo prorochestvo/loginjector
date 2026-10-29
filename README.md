@@ -21,7 +21,6 @@ package main
 import (
 	"log"
 
-	"github.com/prorochestvo/loginjector"
 	"github.com/prorochestvo/loginjector/adapters"
 	"github.com/prorochestvo/loginjector/extensions"
 )
@@ -31,7 +30,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	logger.Printf(adapters.Info, "service started")
+	std := logger.StdLog(adapters.Info, "app ")
+	std.Printf("service started")
 
 	logger.Hook(extensions.TelegramHandler("bot-token", "chat-id", "errors.log"),
 		adapters.Error, adapters.Severe, adapters.Critical)
@@ -69,8 +69,8 @@ logger := loginjector.NewLogger(adapters.Info, ax)
 ## Consumer notes
 
 - `Logger.Panicf` and `Logger.Panic` panic; they do not call `os.Exit`.
-- A sink's `MinLevel` applies when it is wrapped with `WithMinLevel`; hooks match exact
-  levels even below the logger's minimum.
+- `MinLevel` applies to any sink that implements `LeveledHandler`; `WithMinLevel` is one
+  way to add that interface. Hooks match exact levels even below the logger's minimum.
 - `httptap` always redacts its default sensitive headers and credential query parameters;
   options can add names but cannot remove defaults.
 - `httptap.NewRecoverHandler` buffers responses until completion or flush. Streaming routes

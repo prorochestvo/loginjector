@@ -21,7 +21,7 @@ type printConfig struct {
 }
 
 // WithTimeLayout overrides the timestamp layout used by TimestampedPrintHandler.
-// The default layout is sink.DefaultTimeLayout.
+// The default layout is 2006/01/02 15:04:05.
 func WithTimeLayout(layout string) PrintOption {
 	return func(c *printConfig) { c.layout = layout }
 }
@@ -41,7 +41,7 @@ func WithOutput(w io.Writer) PrintOption {
 // can be given sink-side timestamps. The returned writer is mutex-guarded; the
 // logger never calls its Write concurrently.
 //
-// The timestamp layout defaults to sink.DefaultTimeLayout. The first line of a
+// The timestamp layout defaults to 2006/01/02 15:04:05. The first line of a
 // message is prefixed with "<timestamp> "; subsequent lines are indented by the
 // same width so multi-line payloads read as a visual block. Trailing whitespace and
 // newlines are trimmed from the input before formatting; the output always ends
@@ -72,7 +72,7 @@ func TimestampedHandler(inner io.Writer, opts ...PrintOption) io.Writer {
 // WithOutput. The returned writer is mutex-guarded; the logger never calls its
 // Write concurrently. It is the os.Stdout instantiation of TimestampedHandler.
 //
-// The timestamp layout defaults to sink.DefaultTimeLayout. The first line of a message
+// The timestamp layout defaults to 2006/01/02 15:04:05. The first line of a message
 // is prefixed with "<timestamp> "; subsequent lines are indented by the same width so
 // multi-line payloads read as a visual block. Trailing whitespace and newlines are
 // trimmed from the input before formatting; the output always ends with exactly one

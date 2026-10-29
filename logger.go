@@ -367,9 +367,8 @@ func (l *Logger) WriterAs(level LogLevel) io.Writer {
 }
 
 // ensureThreadSafe wraps w in a mutex-guarded writer so the logger never invokes a
-// given sink's Write concurrently. Writers produced by this package's handlers and
-// *sink.Func are already guarded and are returned unchanged. Pointer-type sinks are
-// deduplicated:
+// given sink's Write concurrently. Writers built by this package's factories are already
+// guarded and are returned unchanged. Pointer-type sinks are deduplicated:
 // the same pointer registered multiple times (directly, via WithMinLevel, or as a hook)
 // gets one shared mutex so writes serialize.
 //
@@ -547,6 +546,7 @@ func writeSink(w io.Writer, level LogLevel, p []byte) (err error) {
 // sinkTypeName returns the type name of the unwrapped sink w.
 // For a *writer with an original sink, it returns the type of the original.
 // For a *leveledWriter, it peels through to the inner writer.
+// A sink built by a factory is reported by its own type name.
 // Otherwise it returns the type of w.
 func sinkTypeName(w io.Writer) string {
 	for {

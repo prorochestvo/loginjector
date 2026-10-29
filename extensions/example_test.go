@@ -3,10 +3,10 @@ package extensions_test
 import (
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/prorochestvo/loginjector"
 	"github.com/prorochestvo/loginjector/adapters"
-	"time"
 
 	"github.com/prorochestvo/loginjector/extensions"
 )
@@ -19,12 +19,7 @@ import (
 func ExampleNewAccessHandler() {
 	// access.log stays at a fixed path so `tail -F access.log` follows it across rotations;
 	// rotated backups are indexed, gzipped, and pruned once older than two weeks.
-	out := extensions.RotatingFileHandler(
-		"./logs", "access",
-		extensions.WithStableCurrentName(),
-		extensions.WithMaxAge(14*24*time.Hour),
-		extensions.WithCompress(),
-	)
+	out := extensions.RotatingFileHandler("./logs", "access", extensions.WithStableCurrentName(), extensions.WithMaxAge(14*24*time.Hour), extensions.WithCompress())
 
 	app := func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -34,6 +29,7 @@ func ExampleNewAccessHandler() {
 	_ = extensions.NewAccessHandler(out, app)
 }
 
+// ExampleNewAxiomHandler demonstrates asynchronous Axiom delivery with a Logger.
 func ExampleNewAxiomHandler() {
 	ax, err := extensions.NewAxiomHandler(
 		extensions.AxiomToken(os.Getenv("AXIOM_TOKEN")),
@@ -54,6 +50,7 @@ func ExampleNewAxiomHandler() {
 	std.Printf("started")
 }
 
+// ExampleAxiomHandler_withMinLevel demonstrates filtering Axiom events by level.
 func ExampleAxiomHandler_withMinLevel() {
 	ax, err := extensions.NewAxiomHandler(extensions.AxiomToken(os.Getenv("AXIOM_TOKEN")), "app-logs")
 	if err != nil {

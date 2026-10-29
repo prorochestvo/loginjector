@@ -131,39 +131,6 @@ func WithCompress() RotatingFileOption {
 	return func(c *rotatingFileConfig) { c.compress = true }
 }
 
-// RotatingFileHandler saves messages to files by number. The file name is
-// generated from prefix and an incrementing index (e.g. prefix.00000001.log).
-// When a file exceeds the maximum size the handler moves to the next index and
-// prunes the oldest files so that no more than the configured maximum remain in
-// folder. The handler appends to files and ring-prunes the oldest ones; it never
-// overwrites a file's existing contents unless WithFreshStart is passed.
-//
-// On construction the handler resumes at the highest existing index for prefix in
-// folder (index 1 when none exist or WithFreshStart is set) and seeds the
-// in-memory size counter from that file's on-disk size, so the first write after
-// a restart accounts for existing content instead of writing into the oldest file
-// and letting pruning delete the newest data. Filenames in folder that do not
-// match the exact prefix.<8 hex>.log shape are ignored. Any listing or stat error
-// encountered while resolving the resume point is stashed and joined into the
-// first Write's return value.
-//
-// Defaults: max file size 5 MiB, max files 7, no age bound, no compression, index-named
-// live file. Override with WithMaxFileSize and WithMaxFiles; use WithFreshStart to begin
-// each run from a truncated index-1 file. The opt-in options WithStableCurrentName (fixed
-// prefix.log live path for tail -F), WithMaxAge (mtime-based retention), and WithCompress
-// (gzip rotated backups to prefix.<8 hex>.log.gz) layer on additively; with none of them
-// the on-disk output is byte-identical to a plain rotating handler. FileByFormatHandler is
-// the sibling for filename-generator-driven rotation and has no fresh-start variant (its
-// target name is not known until the first write).
-//
-// The returned writer is mutex-guarded; the logger never calls its Write concurrently,
-// and compression (when enabled) runs synchronously inside that lock. A single process
-// must own a given (folder, prefix) pair; concurrent writers from multiple processes are
-// unsupported under WithStableCurrentName and WithCompress.
-//
-// Write returns len(p) when the line was written in full, 0 with a non-nil error when it
-// was not; a close, rotation or prune error after a full write is returned with n == len(p).
-
 // FileLoggerOption configures NewFileLogger.
 type FileLoggerOption func(*fileLoggerConfig)
 
@@ -261,29 +228,38 @@ func WithPrinterMinLevel(level loginjector.LogLevel) FileLoggerOption {
 	}
 }
 
-// NewFileLogger builds a loginjector.Logger that writes to size-rotated files under folder and,
-// by default, mirrors every message at or above minLevel to a timestamped stdout
-// printer (TimestampedPrintHandler). The printer fires as a handler (level >= minLevel),
-// not a hook, so its gating matches the file handler exactly.
+// RotatingFileHandler saves messages to files by number. The file name is
+// generated from prefix and an incrementing index (e.g. prefix.00000001.log).
+// When a file exceeds the maximum size the handler moves to the next index and
+// prunes the oldest files so that no more than the configured maximum remain in
+// folder. The handler appends to files and ring-prunes the oldest ones; it never
+// overwrites a file's existing contents unless WithFreshStart is passed.
 //
-// File lines are timestamped: the rotated file handler is wrapped in
-// TimestampedHandler, so each on-disk line is "<timestamp> <message>" (layout
-// sink.DefaultTimeLayout), not the bare message. The console printer and the file
-// handler are two separate sinks, each stamped exactly once.
+// On construction the handler resumes at the highest existing index for prefix in
+// folder (index 1 when none exist or WithFreshStart is set) and seeds the
+// in-memory size counter from that file's on-disk size, so the first write after
+// a restart accounts for existing content instead of writing into the oldest file
+// and letting pruning delete the newest data. Filenames in folder that do not
+// match the exact prefix.<8 hex>.log shape are ignored. Any listing or stat error
+// encountered while resolving the resume point is stashed and joined into the
+// first Write's return value.
 //
-// The standard library log package is NOT redirected unless WithStdLogRedirect is
-// passed — that redirect mutates global process state. An empty folder is rejected
-// unless WithTempDirFallback is passed, in which case logs land under
-// filepath.Join(os.TempDir(), "logs"). An empty prefix is always rejected because a
-// hidden dotfile log (prefix ".") is a footgun.
-// Only the leaf folder created by this call is set to 0750 exactly, regardless of the
-// process umask. Parent folders created by MkdirAll get 0750 minus the umask; permissions
-// on a pre-existing folder are left unchanged, except an accepted temp-fallback folder,
-// which is set to 0750.
+// Defaults: max file size 5 MiB, max files 7, no age bound, no compression, index-named
+// live file. Override with WithMaxFileSize and WithMaxFiles; use WithFreshStart to begin
+// each run from a truncated index-1 file. The opt-in options WithStableCurrentName (fixed
+// prefix.log live path for tail -F), WithMaxAge (mtime-based retention), and WithCompress
+// (gzip rotated backups to prefix.<8 hex>.log.gz) layer on additively; with none of them
+// the on-disk output is byte-identical to a plain rotating handler. FileByFormatHandler is
+// the sibling for filename-generator-driven rotation and has no fresh-start variant (its
+// target name is not known until the first write).
 //
-// Defaults: maxFileCapacity = 5 MiB, maxFilesInFolder = 7, printer ON, std-log
-// redirect OFF, temp fallback OFF.
-
+// The returned writer is mutex-guarded; the logger never calls its Write concurrently,
+// and compression (when enabled) runs synchronously inside that lock. A single process
+// must own a given (folder, prefix) pair; concurrent writers from multiple processes are
+// unsupported under WithStableCurrentName and WithCompress.
+//
+// Write returns len(p) when the line was written in full, 0 with a non-nil error when it
+// was not; a close, rotation or prune error after a full write is returned with n == len(p).
 func RotatingFileHandler(folder, prefix string, opts ...RotatingFileOption) io.Writer {
 	cfg := rotatingFileConfig{
 		maxFileSize: 5 << 20,
@@ -497,6 +473,28 @@ func FileByFormatHandler(folder string, maxFilesInFolder int, fileNameGenerator 
 	return w
 }
 
+// NewFileLogger builds a loginjector.Logger that writes to size-rotated files under folder and,
+// by default, mirrors every message at or above minLevel to a timestamped stdout
+// printer (TimestampedPrintHandler). The printer fires as a handler (level >= minLevel),
+// not a hook, so its gating matches the file handler exactly.
+//
+// File lines are timestamped: the rotated file handler is wrapped in
+// TimestampedHandler, so each on-disk line is "<timestamp> <message>" (layout
+// 2006/01/02 15:04:05), not the bare message. The console printer and the file
+// handler are two separate sinks, each stamped exactly once.
+//
+// The standard library log package is NOT redirected unless WithStdLogRedirect is
+// passed — that redirect mutates global process state. An empty folder is rejected
+// unless WithTempDirFallback is passed, in which case logs land under
+// filepath.Join(os.TempDir(), "logs"). An empty prefix is always rejected because a
+// hidden dotfile log (prefix ".") is a footgun.
+// Only the leaf folder created by this call is set to 0750 exactly, regardless of the
+// process umask. Parent folders created by MkdirAll get 0750 minus the umask; permissions
+// on a pre-existing folder are left unchanged, except an accepted temp-fallback folder,
+// which is set to 0750.
+//
+// Defaults: maxFileCapacity = 5 MiB, maxFilesInFolder = 7, printer ON, std-log
+// redirect OFF, temp fallback OFF.
 func NewFileLogger(folder, prefix string, minLevel loginjector.LogLevel, opts ...FileLoggerOption) (*loginjector.Logger, error) {
 	cfg := fileLoggerConfig{
 		maxFileCapacity:  5 << 20,

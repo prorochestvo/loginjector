@@ -30,10 +30,12 @@ func NewAxiomHandler(token AxiomToken, dataset AxiomDataset, opts ...AxiomOption
 	return &AxiomHandler{h: h}, nil
 }
 
-// Write queues an unlevelled log event for asynchronous delivery.
+// Write never blocks: a full queue or closed handler drops the event, returns
+// (len(p), nil), and increments Stats().Dropped.
 func (a *AxiomHandler) Write(p []byte) (int, error) { return a.h.Write(p) }
 
-// WriteLevel queues a log event with its severity.
+// WriteLevel never blocks: a full queue or closed handler drops the event, returns
+// (len(p), nil), and increments Stats().Dropped.
 func (a *AxiomHandler) WriteLevel(level loginjector.LogLevel, p []byte) (int, error) {
 	return a.h.WriteLevel(level, p)
 }
@@ -44,7 +46,8 @@ func (a *AxiomHandler) Flush(ctx context.Context) error { return a.h.Flush(ctx) 
 // Shutdown stops delivery after flushing events admitted before the call.
 func (a *AxiomHandler) Shutdown(ctx context.Context) error { return a.h.Shutdown(ctx) }
 
-// Close shuts down the handler and waits for queued events to finish.
+// Close shuts down the handler with a five-second deadline. Events not delivered by
+// then count as Failed in Stats().
 func (a *AxiomHandler) Close() error { return a.h.Close() }
 
 // Stats reports event counts, not batch counts: Sent counts delivered events,
