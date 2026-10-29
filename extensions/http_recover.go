@@ -12,6 +12,9 @@ import (
 	"github.com/prorochestvo/loginjector"
 )
 
+// RecoverOption configures NewRecoverHandler.
+type RecoverOption func(*recoverConfig)
+
 // NewRecoverHandler returns an HTTP middleware that recovers any panic in next,
 // logs the panic with a stack trace via logger at level, and responds with HTTP
 // 500 plus a JSON body.
@@ -51,10 +54,10 @@ func NewRecoverHandler(
 	opts ...RecoverOption,
 ) http.HandlerFunc {
 	if logger == nil {
-		panic("httptap: logger is nil")
+		panic("loginjector: logger is nil")
 	}
 	if next == nil {
-		panic("httptap: next is nil")
+		panic("loginjector: next is nil")
 	}
 
 	cfg := defaultRecoverConfig()
@@ -82,7 +85,7 @@ func NewRecoverHandler(
 				)
 				logMsg := joined.Error() + " " + ste.Runtime() + "\n" + ste.Stack()
 				if _, err := logger.WriteLog(level, []byte(logMsg)); err != nil {
-					println(err.Error()) // matches existing httptap convention.
+					println(err.Error()) // matches the existing convention.
 				}
 				if rrw.hijacked {
 					return
@@ -155,9 +158,6 @@ func defaultRecoverConfig() recoverConfig {
 		fallbackBody:  []byte(`{"error":"something went wrong"}`),
 	}
 }
-
-// RecoverOption configures NewRecoverHandler.
-type RecoverOption func(*recoverConfig)
 
 // recoverResponseWriter buffers headers, status, and body so a panic after
 // WriteHeader can still be replaced with a 500 response. Nothing is forwarded

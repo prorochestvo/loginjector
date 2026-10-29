@@ -13,49 +13,6 @@ import (
 	"github.com/prorochestvo/loginjector"
 )
 
-// payloadConfig holds all tunables for NewPayloadHandlerWithOptions.
-type payloadConfig struct {
-	// maxRequestBody and maxResponseBody: <0 = unlimited, 0 = omit, >0 = cap at N bytes.
-	maxRequestBody  int
-	maxResponseBody int
-	// redactHeaders is lowercase-folded via redactKey(); always contains
-	// the built-in sensitive set and may contain caller-supplied additions.
-	redactHeaders map[string]struct{}
-	// redactQueryParams holds lowercase parameter names to redact; always contains
-	// the built-in set (access_token, refresh_token, etc.) and may contain caller-supplied
-	// additions.
-	redactQueryParams map[string]struct{}
-	// summaryWriter, when non-nil, overrides os.Stdout for the per-request summary line
-	// for this handler only.
-	summaryWriter io.Writer
-}
-
-// defaultMaxBody is the default per-request body-capture cap (64 KiB). It bounds
-// the memory a debug handler buffers per request; a larger body is truncated in
-// the log while the downstream handler/client still receives it in full. Pass
-// WithMaxRequestBody(-1) / WithMaxResponseBody(-1) to opt back into unlimited
-// capture.
-const defaultMaxBody = 64 << 10 // 65536
-
-// defaultPayloadConfig returns the baseline config: 64 KiB body-capture cap,
-// fixed redaction sets, os.Stdout summary.
-func defaultPayloadConfig() payloadConfig {
-	m := make(map[string]struct{}, len(defaultRedactHeaders))
-	for _, h := range defaultRedactHeaders {
-		m[redactKey(h)] = struct{}{}
-	}
-	q := make(map[string]struct{}, len(defaultRedactQueryParams))
-	for name := range defaultRedactQueryParams {
-		q[redactKey(name)] = struct{}{}
-	}
-	return payloadConfig{
-		maxRequestBody:    defaultMaxBody,
-		maxResponseBody:   defaultMaxBody,
-		redactHeaders:     m,
-		redactQueryParams: q,
-	}
-}
-
 // PayloadOption configures NewPayloadHandlerWithOptions. Options are applied in
 // order; later options win. The zero set of options reproduces the exact
 // behaviour of NewPayloadHandler.
@@ -157,10 +114,10 @@ func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, n
 //   - WithSummaryWriter — override the summary destination for this handler only.
 func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.LogLevel, nextFunc http.HandlerFunc, opts ...PayloadOption) http.HandlerFunc {
 	if logger == nil {
-		panic("httptap: logger is nil")
+		panic("loginjector: logger is nil")
 	}
 	if nextFunc == nil {
-		panic("httptap: nextFunc is nil")
+		panic("loginjector: nextFunc is nil")
 	}
 
 	cfg := defaultPayloadConfig()
@@ -214,5 +171,48 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 				f.Flush()
 			}
 		}
+	}
+}
+
+// payloadConfig holds all tunables for NewPayloadHandlerWithOptions.
+type payloadConfig struct {
+	// maxRequestBody and maxResponseBody: <0 = unlimited, 0 = omit, >0 = cap at N bytes.
+	maxRequestBody  int
+	maxResponseBody int
+	// redactHeaders is lowercase-folded via redactKey(); always contains
+	// the built-in sensitive set and may contain caller-supplied additions.
+	redactHeaders map[string]struct{}
+	// redactQueryParams holds lowercase parameter names to redact; always contains
+	// the built-in set (access_token, refresh_token, etc.) and may contain caller-supplied
+	// additions.
+	redactQueryParams map[string]struct{}
+	// summaryWriter, when non-nil, overrides os.Stdout for the per-request summary line
+	// for this handler only.
+	summaryWriter io.Writer
+}
+
+// defaultMaxBody is the default per-request body-capture cap (64 KiB). It bounds
+// the memory a debug handler buffers per request; a larger body is truncated in
+// the log while the downstream handler/client still receives it in full. Pass
+// WithMaxRequestBody(-1) / WithMaxResponseBody(-1) to opt back into unlimited
+// capture.
+const defaultMaxBody = 64 << 10 // 65536
+
+// defaultPayloadConfig returns the baseline config: 64 KiB body-capture cap,
+// fixed redaction sets, os.Stdout summary.
+func defaultPayloadConfig() payloadConfig {
+	m := make(map[string]struct{}, len(defaultRedactHeaders))
+	for _, h := range defaultRedactHeaders {
+		m[redactKey(h)] = struct{}{}
+	}
+	q := make(map[string]struct{}, len(defaultRedactQueryParams))
+	for name := range defaultRedactQueryParams {
+		q[redactKey(name)] = struct{}{}
+	}
+	return payloadConfig{
+		maxRequestBody:    defaultMaxBody,
+		maxResponseBody:   defaultMaxBody,
+		redactHeaders:     m,
+		redactQueryParams: q,
 	}
 }

@@ -35,7 +35,7 @@ func TestNewRecoverHandler(t *testing.T) {
 
 	t.Run("nil_logger_panics", func(t *testing.T) {
 		t.Parallel()
-		require.PanicsWithValue(t, "httptap: logger is nil", func() {
+		require.PanicsWithValue(t, "loginjector: logger is nil", func() {
 			NewRecoverHandler(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
@@ -43,7 +43,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("nil_next_panics", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		require.PanicsWithValue(t, "httptap: next is nil", func() {
+		require.PanicsWithValue(t, "loginjector: next is nil", func() {
 			NewRecoverHandler(l, logLevelInfo, nil)
 		})
 	})

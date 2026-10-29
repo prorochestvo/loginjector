@@ -1,5 +1,5 @@
 // http.go holds the lightweight production access-log handler; see
-// httptap/payload.go for the debug full-dump variant.
+// extensions/http_payload.go for the debug full-dump variant.
 
 package extensions
 
@@ -19,7 +19,7 @@ import (
 //
 // It is the production access-log variant: status, method, path, duration; no
 // header dumping, no body capture, no goroutine fan-out, no *Logger coupling.
-// For the debug full-dump variant see httptap.NewPayloadHandler.
+// For the debug full-dump variant see NewPayloadHandler.
 //
 // out is the destination for log lines. The handler writes synchronously; out
 // MUST be safe for concurrent Write calls (an *os.File or os.Stdout qualifies;

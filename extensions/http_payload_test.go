@@ -142,7 +142,7 @@ func TestNewPayloadHandler(t *testing.T) {
 	t.Run("nil logger panics", func(t *testing.T) {
 		t.Parallel()
 
-		require.PanicsWithValue(t, "httptap: logger is nil", func() {
+		require.PanicsWithValue(t, "loginjector: logger is nil", func() {
 			NewPayloadHandler(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
@@ -151,7 +151,7 @@ func TestNewPayloadHandler(t *testing.T) {
 		t.Parallel()
 
 		l := loginjector.NewLogger(logLevelInfo, bytes.NewBufferString(""))
-		require.PanicsWithValue(t, "httptap: nextFunc is nil", func() {
+		require.PanicsWithValue(t, "loginjector: nextFunc is nil", func() {
 			NewPayloadHandler(l, logLevelInfo, nil)
 		})
 	})
@@ -177,7 +177,7 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 	t.Run("nil logger panics", func(t *testing.T) {
 		t.Parallel()
 
-		require.PanicsWithValue(t, "httptap: logger is nil", func() {
+		require.PanicsWithValue(t, "loginjector: logger is nil", func() {
 			NewPayloadHandlerWithOptions(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
