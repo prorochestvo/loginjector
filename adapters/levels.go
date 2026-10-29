@@ -1,4 +1,4 @@
-// Package levels provides an optional preset of named severity constants for the
+// Package adapters provides an optional preset of named severity constants for the
 // loginjector.LogLevel type. The core loginjector package ships no level constants by
 // design — LogLevel is consumer-defined. This sub-package offers a ready-made,
 // six-rung ladder (Debug..Critical = 1..6) whose values match the historical
@@ -6,7 +6,7 @@
 // and replace them with a single import without renumbering call sites or persisted
 // values. Importing this package is entirely opt-in; ignoring it leaves the
 // unopinionated core exactly as it is.
-package levels
+package adapters
 
 import (
 	"strings"

@@ -21,7 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/prorochestvo/loginjector"
-	"github.com/prorochestvo/loginjector/levels"
+	"github.com/prorochestvo/loginjector/adapters"
 )
 
 // ErrClosed is returned by Flush after shutdown has started.
@@ -86,7 +86,7 @@ func NewHandler(token Token, dataset Dataset, opts ...Option) (*Handler, error) 
 		token:         tokenString,
 		dataset:       datasetString,
 		domain:        defaultDomain,
-		levelName:     levels.Name,
+		levelName:     adapters.Name,
 		batchSize:     defaultBatchSize,
 		maxBatchBytes: defaultMaxBatchBytes,
 		flushInterval: time.Second,

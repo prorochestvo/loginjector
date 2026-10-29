@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/adapters"
 	"github.com/prorochestvo/loginjector/axiom"
-	"github.com/prorochestvo/loginjector/levels"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,9 +42,9 @@ func TestIntegration_smokeIngest(t *testing.T) {
 		level   loginjector.LogLevel
 		message string
 	}{
-		{level: levels.Info, message: "info event"},
-		{level: levels.Warning, message: "warning event"},
-		{level: levels.Error, message: "error event"},
+		{level: adapters.Info, message: "info event"},
+		{level: adapters.Warning, message: "warning event"},
+		{level: adapters.Error, message: "error event"},
 	} {
 		_, err := handler.WriteLevel(event.level, []byte(fmt.Sprintf("%s %s", runID, event.message)))
 		require.NoError(t, err)

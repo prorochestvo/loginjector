@@ -19,7 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/prorochestvo/loginjector"
-	"github.com/prorochestvo/loginjector/levels"
+	"github.com/prorochestvo/loginjector/adapters"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1309,7 +1309,7 @@ func TestHandler_appendEvent(t *testing.T) {
 			nil,
 			newEvent(
 				time.Now(),
-				levels.Warning,
+				adapters.Warning,
 				false,
 				[]byte("plain"),
 			),
@@ -1335,7 +1335,7 @@ func TestHandler_appendEvent(t *testing.T) {
 			nil,
 			newEvent(
 				time.Now(),
-				levels.Warning,
+				adapters.Warning,
 				true,
 				[]byte("warning"),
 			),

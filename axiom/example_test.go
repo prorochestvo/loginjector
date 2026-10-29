@@ -4,8 +4,8 @@ import (
 	"os"
 
 	"github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/adapters"
 	"github.com/prorochestvo/loginjector/axiom"
-	"github.com/prorochestvo/loginjector/levels"
 )
 
 func ExampleNewHandler() {
@@ -22,11 +22,11 @@ func ExampleNewHandler() {
 	}
 	defer ax.Close()
 	logger := loginjector.NewLogger(
-		levels.Info,
+		adapters.Info,
 		loginjector.TimestampedPrintHandler(),
 		ax,
 	)
-	std := logger.StdLog(levels.Info, "")
+	std := logger.StdLog(adapters.Info, "")
 	std.Printf("started")
 }
 
@@ -37,8 +37,8 @@ func ExampleHandler_withMinLevel() {
 	}
 	defer ax.Close()
 
-	warnings := loginjector.WithMinLevel(levels.Warning, ax)
-	logger := loginjector.NewLogger(levels.Info, warnings)
-	logger.Printf(levels.Info, "not queued for Axiom")
-	logger.Printf(levels.Warning, "queued for Axiom")
+	warnings := loginjector.WithMinLevel(adapters.Warning, ax)
+	logger := loginjector.NewLogger(adapters.Info, warnings)
+	logger.Printf(adapters.Info, "not queued for Axiom")
+	logger.Printf(adapters.Warning, "queued for Axiom")
 }
