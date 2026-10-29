@@ -1,14 +1,18 @@
-package httptap
+package extensions
 
 import (
+	"bufio"
 	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"sync"
 	"testing"
 
+	"github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/httptap"
 	"github.com/prorochestvo/loginjector/internal/httpx"
 
 	"github.com/stretchr/testify/assert"
@@ -17,6 +21,7 @@ import (
 
 // Compile-time assertion for accessResponseWriter.
 var _ httpx.Tap = (*accessResponseWriter)(nil)
+var _ http.ResponseWriter = (*accessResponseWriter)(nil)
 
 // TestNewAccessHandler exercises NewAccessHandler across all enumerated scenarios.
 func TestNewAccessHandler(t *testing.T) {
@@ -148,7 +153,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		next := func(_ http.ResponseWriter, _ *http.Request) {}
-		require.PanicsWithValue(t, "httptap: out is nil", func() {
+		require.PanicsWithValue(t, "loginjector: out is nil", func() {
 			NewAccessHandler(nil, next)
 		})
 	})
@@ -157,7 +162,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var buf bytes.Buffer
-		require.PanicsWithValue(t, "httptap: next is nil", func() {
+		require.PanicsWithValue(t, "loginjector: next is nil", func() {
 			NewAccessHandler(&buf, nil)
 		})
 	})
@@ -440,7 +445,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var accessBuf bytes.Buffer
-		l, _ := newRecoverTestLogger(t)
+		l, _ := newAccessRecoverTestLogger(t)
 
 		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -450,7 +455,7 @@ func TestNewAccessHandler(t *testing.T) {
 			}
 		}
 
-		recoverH := NewRecoverHandler(l, logLevelInfo, next)
+		recoverH := httptap.NewRecoverHandler(l, logLevelInfo, next)
 		accessH := NewAccessHandler(&accessBuf, recoverH)
 
 		rec := httptest.NewRecorder()
@@ -480,3 +485,153 @@ func BenchmarkNewAccessHandler(b *testing.B) {
 		h(pw, req)
 	}
 }
+
+// plainResponseWriter implements only http.ResponseWriter with no optional
+// interfaces. It intentionally does NOT embed *httptest.ResponseRecorder (which
+// is itself an http.Flusher), so type-asserting the wrapped interceptor to
+// http.Flusher returns false.
+type plainResponseWriter struct {
+	rec *httptest.ResponseRecorder
+}
+
+func (p *plainResponseWriter) Header() http.Header         { return p.rec.Header() }
+func (p *plainResponseWriter) Write(b []byte) (int, error) { return p.rec.Write(b) }
+func (p *plainResponseWriter) WriteHeader(code int)        { p.rec.WriteHeader(code) }
+
+var _ http.ResponseWriter = &plainResponseWriter{} // compile-time check
+
+type fakeFlusherWriter struct {
+	*httptest.ResponseRecorder
+	onFlush func()
+}
+
+func (f *fakeFlusherWriter) Flush() { f.onFlush() }
+
+var _ http.ResponseWriter = &fakeFlusherWriter{} // compile-time check
+var _ http.Flusher = &fakeFlusherWriter{}        // compile-time check
+
+type fakeHijackerWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (h *fakeHijackerWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	// return a pair of connected net.Conn via net.Pipe for a realistic response.
+	server, client := net.Pipe()
+	_ = client.Close()
+	br := bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server))
+	return server, br, nil
+}
+
+var _ http.ResponseWriter = &fakeHijackerWriter{} // compile-time check
+var _ http.Hijacker = &fakeHijackerWriter{}       // compile-time check
+
+type fakePusherWriter struct {
+	*httptest.ResponseRecorder
+	onPush func(string)
+}
+
+func (p *fakePusherWriter) Push(target string, _ *http.PushOptions) error {
+	p.onPush(target)
+	return nil
+}
+
+var _ http.ResponseWriter = &fakePusherWriter{} // compile-time check
+var _ http.Pusher = &fakePusherWriter{}         // compile-time check
+
+// fakeComboAllThree implements http.ResponseWriter + http.Flusher + http.Hijacker + http.Pusher.
+type fakeComboAllThree struct {
+	rec     *httptest.ResponseRecorder
+	onFlush func()
+	onPush  func(string)
+}
+
+func (f *fakeComboAllThree) Header() http.Header         { return f.rec.Header() }
+func (f *fakeComboAllThree) Write(b []byte) (int, error) { return f.rec.Write(b) }
+func (f *fakeComboAllThree) WriteHeader(code int)        { f.rec.WriteHeader(code) }
+func (f *fakeComboAllThree) Flush()                      { f.onFlush() }
+func (f *fakeComboAllThree) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	server, client := net.Pipe()
+	_ = client.Close()
+	br := bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server))
+	return server, br, nil
+}
+func (f *fakeComboAllThree) Push(target string, _ *http.PushOptions) error {
+	f.onPush(target)
+	return nil
+}
+
+var _ http.ResponseWriter = &fakeComboAllThree{} // compile-time check
+var _ http.Flusher = &fakeComboAllThree{}        // compile-time check
+var _ http.Hijacker = &fakeComboAllThree{}       // compile-time check
+var _ http.Pusher = &fakeComboAllThree{}         // compile-time check
+
+// lockedWriter is a thread-safe io.Writer used in the race subtest to prevent
+// data races on a shared writer from masking handler-level races.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  interface{ Write([]byte) (int, error) }
+}
+
+func (l *lockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
+}
+
+// statusLogWriter is a fake http.ResponseWriter + http.Flusher that records
+// every WriteHeader call (including 1xx informational), modeling net/http's
+// 1xx semantics (informational codes do not commit a final status).
+type statusLogWriter struct {
+	*httptest.ResponseRecorder
+	statusCodes     []int
+	headerSnapshots []http.Header
+	finalStatus     int
+	finalHeaders    http.Header
+	body            []byte
+	flushed         bool
+}
+
+func newStatusLogWriter() *statusLogWriter {
+	return &statusLogWriter{
+		ResponseRecorder: httptest.NewRecorder(),
+		statusCodes:      make([]int, 0),
+		headerSnapshots:  make([]http.Header, 0),
+	}
+}
+
+func (s *statusLogWriter) WriteHeader(code int) {
+	s.statusCodes = append(s.statusCodes, code)
+	// Record a header snapshot at each WriteHeader call.
+	headerSnapshot := s.Header().Clone()
+	s.headerSnapshots = append(s.headerSnapshots, headerSnapshot)
+	// Track the final status (the last non-1xx code).
+	if code < 100 || code > 199 || code == 101 {
+		s.finalStatus = code
+		s.finalHeaders = headerSnapshot
+	}
+	// Don't call the recorder's WriteHeader; it treats all codes as final.
+	// Instead, just record the code.
+}
+
+func (s *statusLogWriter) Write(b []byte) (int, error) {
+	s.body = append(s.body, b...)
+	return s.ResponseRecorder.Write(b)
+}
+
+func (s *statusLogWriter) Flush() {
+	s.flushed = true
+}
+
+var _ http.ResponseWriter = &statusLogWriter{}
+var _ http.Flusher = &statusLogWriter{}
+
+// newAccessRecoverTestLogger creates a Logger backed by a thread-safe buffer.
+func newAccessRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	lw := &lockedWriter{w: buf}
+	l := loginjector.NewLogger(logLevelInfo, lw)
+	return l, buf
+}
+
+const logLevelInfo loginjector.LogLevel = 1

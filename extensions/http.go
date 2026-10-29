@@ -1,7 +1,7 @@
 // access.go holds the lightweight production access-log handler; see payload.go
 // for the debug full-dump variant.
 
-package httptap
+package extensions
 
 import (
 	"fmt"
@@ -11,6 +11,17 @@ import (
 
 	"github.com/prorochestvo/loginjector/internal/httpx"
 )
+
+// accessResponseWriter is a lightweight http.ResponseWriter wrapper that records
+// only the status code. It does not buffer request or response bodies. It
+// satisfies httpx.Tap so it can be passed to
+// httpx.WrapWithOptionalInterfaces.
+type accessResponseWriter struct {
+	http.ResponseWriter
+	statusCode  int
+	wroteHeader bool
+	hijacked    bool
+}
 
 // NewAccessHandler returns an HTTP middleware that emits one line per request
 // in the form:
@@ -39,10 +50,10 @@ import (
 // ...WithOptions constructor in a future change, not by mutating this signature.
 func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 	if out == nil {
-		panic("httptap: out is nil")
+		panic("loginjector: out is nil")
 	}
 	if next == nil {
-		panic("httptap: next is nil")
+		panic("loginjector: next is nil")
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -72,17 +83,6 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 		next(wrapped, r)
 		completed = true
 	}
-}
-
-// accessResponseWriter is a lightweight http.ResponseWriter wrapper that records
-// only the status code. It does not buffer request or response bodies. It
-// satisfies httpx.Tap so it can be passed to
-// httpx.WrapWithOptionalInterfaces.
-type accessResponseWriter struct {
-	http.ResponseWriter
-	statusCode  int
-	wroteHeader bool
-	hijacked    bool
 }
 
 // WriteHeader records the status code on the first final call only; informational
@@ -128,6 +128,3 @@ func (a *accessResponseWriter) BeforeFlush() {
 		a.wroteHeader = true
 	}
 }
-
-// compile-time interface assertions.
-var _ http.ResponseWriter = (*accessResponseWriter)(nil)

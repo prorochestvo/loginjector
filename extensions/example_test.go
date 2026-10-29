@@ -1,4 +1,4 @@
-package httptap
+package extensions_test
 
 import (
 	"net/http"
@@ -27,5 +27,5 @@ func ExampleNewAccessHandler() {
 	}
 
 	// Register the returned handler with http.Handle or your router.
-	_ = NewAccessHandler(out, app)
+	_ = extensions.NewAccessHandler(out, app)
 }

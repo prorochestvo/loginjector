@@ -9,4 +9,7 @@
 // TelegramHandler sends matching log messages to the Telegram Bot API as documents.
 // It uses a synchronous HTTP POST with a 20-second timeout, so matching messages block
 // their callers. Transport errors redact the bot token.
+//
+// HTTP access logging is available through NewAccessHandler, which emits one
+// status, method, path, and duration line per request to an io.Writer.
 package extensions
