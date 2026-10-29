@@ -752,28 +752,6 @@ func TestNewPayloadHandlerWithOptions_HeaderRedaction(t *testing.T) {
 	})
 }
 
-// ExampleNewPayloadHandlerWithOptions demonstrates the recommended configuration
-// for a production consumer that wants bounded body capture, extra secret-header
-// redaction, and a silent per-handler summary.
-func ExampleNewPayloadHandlerWithOptions() {
-	const LevelInfo loginjector.LogLevel = 1
-
-	logger := loginjector.NewLogger(LevelInfo)
-	myHttpHandler := func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	}
-	_ = NewPayloadHandlerWithOptions(
-		logger,
-		LevelInfo,
-		myHttpHandler,
-		WithMaxRequestBody(4096),  // cap request body at 4 KiB
-		WithMaxResponseBody(4096), // cap response body at 4 KiB
-		WithRedactHeaders("X-Api-Key", "X-Telegram-Init-Data"),
-		WithSummaryWriter(io.Discard), // silence per-request summary line
-	)
-	// Use the returned handler with http.Handle or your router.
-}
-
 // safeBuffer is a thread-safe bytes.Buffer for the race-condition test.
 type safeBuffer struct {
 	mu  sync.Mutex

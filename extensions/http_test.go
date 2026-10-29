@@ -446,7 +446,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var accessBuf bytes.Buffer
-		l, _ := newAccessRecoverTestLogger(t)
+		l, _ := newRecoverTestLogger(t)
 
 		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -625,12 +625,3 @@ func (s *statusLogWriter) Flush() {
 
 var _ http.ResponseWriter = &statusLogWriter{}
 var _ http.Flusher = &statusLogWriter{}
-
-// newAccessRecoverTestLogger creates a Logger backed by a thread-safe buffer.
-func newAccessRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	lw := &lockedWriter{w: buf}
-	l := loginjector.NewLogger(logLevelInfo, lw)
-	return l, buf
-}
