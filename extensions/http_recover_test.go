@@ -1,4 +1,4 @@
-package httptap
+package extensions
 
 import (
 	"bytes"
@@ -20,22 +20,13 @@ import (
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
 var _ httpx.Tap = (*recoverResponseWriter)(nil)
 
-// newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
-func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	lw := &lockedWriter{w: buf}
-	l := loginjector.NewLogger(logLevelInfo, lw)
-	return l, buf
-}
-
 // TestNewRecoverHandler covers all NewRecoverHandler scenarios.
 func TestNewRecoverHandler(t *testing.T) {
 	t.Parallel()
 
 	t.Run("nil_logger_panics", func(t *testing.T) {
 		t.Parallel()
-		require.PanicsWithValue(t, "httptap: logger is nil", func() {
+		require.PanicsWithValue(t, "loginjector: logger is nil", func() {
 			NewRecoverHandler(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
@@ -43,7 +34,7 @@ func TestNewRecoverHandler(t *testing.T) {
 	t.Run("nil_next_panics", func(t *testing.T) {
 		t.Parallel()
 		l, _ := newRecoverTestLogger(t)
-		require.PanicsWithValue(t, "httptap: next is nil", func() {
+		require.PanicsWithValue(t, "loginjector: next is nil", func() {
 			NewRecoverHandler(l, logLevelInfo, nil)
 		})
 	})
@@ -763,15 +754,11 @@ func TestNewRecoverHandler(t *testing.T) {
 	})
 }
 
-// lockedWriter is a thread-safe io.Writer used in the race subtest to prevent
-// data races on a shared writer from masking handler-level races.
-type lockedWriter struct {
-	mu sync.Mutex
-	w  interface{ Write([]byte) (int, error) }
-}
-
-func (l *lockedWriter) Write(b []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.w.Write(b)
+// newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
+func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	lw := &lockedWriter{w: buf}
+	l := loginjector.NewLogger(logLevelInfo, lw)
+	return l, buf
 }

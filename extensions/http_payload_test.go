@@ -1,4 +1,4 @@
-package httptap
+package extensions
 
 import (
 	"bytes"
@@ -7,10 +7,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +16,94 @@ import (
 
 	"github.com/prorochestvo/loginjector"
 )
+
+// TestSummaryWriter exercises WithSummaryWriter in full.
+// This function does NOT call t.Parallel() (top-level or subtests) to ensure
+// sequential execution. In the original root package there was a package-global
+// summary writer that required serialisation to avoid races. The global is gone
+// (Variant B), but we keep the non-parallel discipline here as a safety margin
+// since these subtests do share os.Stdout as the default fallback destination.
+//
+//nolint:paralleltest // subtests share os.Stdout as the default summary destination
+func TestSummaryWriter(t *testing.T) {
+	// newSummaryHandler is a local helper: builds a handler backed by a fresh logger.
+	newSummaryHandler := func(t *testing.T, opts ...PayloadOption) (http.HandlerFunc, *bytes.Buffer) {
+		t.Helper()
+		b := bytes.NewBufferString("")
+		l := loginjector.NewLogger(logLevelInfo, b)
+		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			_, _ = w.Write([]byte("ok"))
+		}, opts...)
+		return h, b
+	}
+
+	t.Run("option_overrides_default", func(t *testing.T) {
+		perHandler := bytes.NewBufferString("")
+		h, _ := newSummaryHandler(t, WithSummaryWriter(perHandler))
+		req := httptest.NewRequest(http.MethodGet, "/per-handler", bytes.NewBufferString(""))
+		h(httptest.NewRecorder(), req)
+
+		require.Contains(t, perHandler.String(), "/per-handler", "per-handler summary writer must receive the summary")
+	})
+
+	t.Run("discard_silences_summary", func(t *testing.T) {
+		perHandler := bytes.NewBufferString("")
+		h, _ := newSummaryHandler(t, WithSummaryWriter(io.Discard))
+		req := httptest.NewRequest(http.MethodGet, "/discarded", bytes.NewBufferString(""))
+		h(httptest.NewRecorder(), req)
+
+		require.NotContains(t, perHandler.String(), "/discarded", "discarded summary must not reach per-handler buffer")
+	})
+
+	// no-options backward-compat gate: NewPayloadHandler and NewPayloadHandlerWithOptions
+	// with no behavioral options must produce equivalent log output for the same request.
+	t.Run("no_options_equivalent_to_legacy_constructor", func(t *testing.T) {
+		requestBody := "identical-body-" + uniqueToken()
+		userAgent := "go-test/" + uniqueToken()
+
+		echoHandler := func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			body, _ := io.ReadAll(r.Body)
+			_, _ = w.Write(body)
+		}
+
+		// Side A: real legacy constructor — exercises NewPayloadHandler directly.
+		bA := bytes.NewBufferString("")
+		lA := loginjector.NewLogger(logLevelInfo, bA)
+		hA := NewPayloadHandler(lA, logLevelInfo, echoHandler)
+
+		// Side B: new constructor with no behavioral options; summary goes to io.Discard.
+		summaryB := bytes.NewBufferString("")
+		bB := bytes.NewBufferString("")
+		lB := loginjector.NewLogger(logLevelInfo, bB)
+		hB := NewPayloadHandlerWithOptions(lB, logLevelInfo, echoHandler, WithSummaryWriter(summaryB))
+
+		makeReq := func() *http.Request {
+			req := httptest.NewRequest(http.MethodPost, "/test?q=1", bytes.NewBufferString(requestBody))
+			req.Header.Set("User-Agent", userAgent)
+			req.Header.Set("Content-Type", "text/plain")
+			return req
+		}
+
+		resA := httptest.NewRecorder()
+		hA(resA, makeReq())
+		resB := httptest.NewRecorder()
+		hB(resB, makeReq())
+
+		// response bodies must be identical.
+		require.Equal(t, resA.Body.String(), resB.Body.String(), "response bodies must match")
+
+		// both logs must contain the same key tokens.
+		for _, token := range []string{requestBody, userAgent, "/test", "q=1", "200", http.StatusText(http.StatusOK)} {
+			require.Contains(t, bA.String(), token, "legacy log must contain %q", token)
+			require.Contains(t, bB.String(), token, "options log must contain %q", token)
+		}
+
+		// options side wrote only to its per-handler buffer.
+		require.Contains(t, summaryB.String(), "/test", "options constructor must write to its per-handler summary")
+	})
+}
 
 func TestNewPayloadHandler(t *testing.T) {
 	t.Parallel()
@@ -144,7 +230,7 @@ func TestNewPayloadHandler(t *testing.T) {
 	t.Run("nil logger panics", func(t *testing.T) {
 		t.Parallel()
 
-		require.PanicsWithValue(t, "httptap: logger is nil", func() {
+		require.PanicsWithValue(t, "loginjector: logger is nil", func() {
 			NewPayloadHandler(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
@@ -153,7 +239,7 @@ func TestNewPayloadHandler(t *testing.T) {
 		t.Parallel()
 
 		l := loginjector.NewLogger(logLevelInfo, bytes.NewBufferString(""))
-		require.PanicsWithValue(t, "httptap: nextFunc is nil", func() {
+		require.PanicsWithValue(t, "loginjector: nextFunc is nil", func() {
 			NewPayloadHandler(l, logLevelInfo, nil)
 		})
 	})
@@ -179,7 +265,7 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 	t.Run("nil logger panics", func(t *testing.T) {
 		t.Parallel()
 
-		require.PanicsWithValue(t, "httptap: logger is nil", func() {
+		require.PanicsWithValue(t, "loginjector: logger is nil", func() {
 			NewPayloadHandlerWithOptions(nil, logLevelInfo, func(_ http.ResponseWriter, _ *http.Request) {})
 		})
 	})
@@ -638,124 +724,32 @@ func TestNewPayloadHandlerWithOptions(t *testing.T) {
 	})
 }
 
-// TestSummaryWriter exercises WithSummaryWriter in full.
-// This function does NOT call t.Parallel() (top-level or subtests) to ensure
-// sequential execution. In the original root package there was a package-global
-// summary writer that required serialisation to avoid races. The global is gone
-// (Variant B), but we keep the non-parallel discipline here as a safety margin
-// since these subtests do share os.Stdout as the default fallback destination.
-//
-//nolint:paralleltest // subtests share os.Stdout as the default summary destination
-func TestSummaryWriter(t *testing.T) {
-	// newSummaryHandler is a local helper: builds a handler backed by a fresh logger.
-	newSummaryHandler := func(t *testing.T, opts ...PayloadOption) (http.HandlerFunc, *bytes.Buffer) {
-		t.Helper()
+func TestNewPayloadHandlerWithOptions_HeaderRedaction(t *testing.T) {
+	t.Parallel()
+
+	t.Run("response_header_set_directly_in_map_is_redacted", func(t *testing.T) {
+		t.Parallel()
+
 		b := bytes.NewBufferString("")
 		l := loginjector.NewLogger(logLevelInfo, b)
-		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+
+		token := uniqueToken()
+		req := httptest.NewRequest(http.MethodGet, "/test", bytes.NewBufferString(""))
+		res := httptest.NewRecorder()
+
+		nextFunc := func(w http.ResponseWriter, r *http.Request) {
 			defer func() { _ = r.Body.Close() }()
-			_, _ = w.Write([]byte("ok"))
-		}, opts...)
-		return h, b
-	}
-
-	t.Run("option_overrides_default", func(t *testing.T) {
-		perHandler := bytes.NewBufferString("")
-		h, _ := newSummaryHandler(t, WithSummaryWriter(perHandler))
-		req := httptest.NewRequest(http.MethodGet, "/per-handler", bytes.NewBufferString(""))
-		h(httptest.NewRecorder(), req)
-
-		require.Contains(t, perHandler.String(), "/per-handler", "per-handler summary writer must receive the summary")
-	})
-
-	t.Run("discard_silences_summary", func(t *testing.T) {
-		perHandler := bytes.NewBufferString("")
-		h, _ := newSummaryHandler(t, WithSummaryWriter(io.Discard))
-		req := httptest.NewRequest(http.MethodGet, "/discarded", bytes.NewBufferString(""))
-		h(httptest.NewRecorder(), req)
-
-		require.NotContains(t, perHandler.String(), "/discarded", "discarded summary must not reach per-handler buffer")
-	})
-
-	// no-options backward-compat gate: NewPayloadHandler and NewPayloadHandlerWithOptions
-	// with no behavioral options must produce equivalent log output for the same request.
-	t.Run("no_options_equivalent_to_legacy_constructor", func(t *testing.T) {
-		requestBody := "identical-body-" + uniqueToken()
-		userAgent := "go-test/" + uniqueToken()
-
-		echoHandler := func(w http.ResponseWriter, r *http.Request) {
-			defer func() { _ = r.Body.Close() }()
-			body, _ := io.ReadAll(r.Body)
-			_, _ = w.Write(body)
+			w.Header()["set-cookie"] = []string{"session=" + token}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("body"))
 		}
 
-		// Side A: real legacy constructor — exercises NewPayloadHandler directly.
-		bA := bytes.NewBufferString("")
-		lA := loginjector.NewLogger(logLevelInfo, bA)
-		hA := NewPayloadHandler(lA, logLevelInfo, echoHandler)
+		h := NewPayloadHandler(l, logLevelInfo, nextFunc)
+		h(res, req)
 
-		// Side B: new constructor with no behavioral options; summary goes to io.Discard.
-		summaryB := bytes.NewBufferString("")
-		bB := bytes.NewBufferString("")
-		lB := loginjector.NewLogger(logLevelInfo, bB)
-		hB := NewPayloadHandlerWithOptions(lB, logLevelInfo, echoHandler, WithSummaryWriter(summaryB))
-
-		makeReq := func() *http.Request {
-			req := httptest.NewRequest(http.MethodPost, "/test?q=1", bytes.NewBufferString(requestBody))
-			req.Header.Set("User-Agent", userAgent)
-			req.Header.Set("Content-Type", "text/plain")
-			return req
-		}
-
-		resA := httptest.NewRecorder()
-		hA(resA, makeReq())
-		resB := httptest.NewRecorder()
-		hB(resB, makeReq())
-
-		// response bodies must be identical.
-		require.Equal(t, resA.Body.String(), resB.Body.String(), "response bodies must match")
-
-		// both logs must contain the same key tokens.
-		for _, token := range []string{requestBody, userAgent, "/test", "q=1", "200", http.StatusText(http.StatusOK)} {
-			require.Contains(t, bA.String(), token, "legacy log must contain %q", token)
-			require.Contains(t, bB.String(), token, "options log must contain %q", token)
-		}
-
-		// options side wrote only to its per-handler buffer.
-		require.Contains(t, summaryB.String(), "/test", "options constructor must write to its per-handler summary")
+		require.Equal(t, http.StatusOK, res.Code)
+		assert.NotContains(t, b.String(), token, "set-cookie token should be redacted")
 	})
-}
-
-// ExampleNewPayloadHandlerWithOptions demonstrates the recommended configuration
-// for a production consumer that wants bounded body capture, extra secret-header
-// redaction, and a silent per-handler summary.
-func ExampleNewPayloadHandlerWithOptions() {
-	const LevelInfo loginjector.LogLevel = 1
-
-	logger := loginjector.NewLogger(LevelInfo)
-	myHttpHandler := func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	}
-	_ = NewPayloadHandlerWithOptions(
-		logger,
-		LevelInfo,
-		myHttpHandler,
-		WithMaxRequestBody(4096),  // cap request body at 4 KiB
-		WithMaxResponseBody(4096), // cap response body at 4 KiB
-		WithRedactHeaders("X-Api-Key", "X-Telegram-Init-Data"),
-		WithSummaryWriter(io.Discard), // silence per-request summary line
-	)
-	// Use the returned handler with http.Handle or your router.
-}
-
-// tokenSeq backs uniqueToken.
-var tokenSeq atomic.Uint64
-
-// uniqueToken returns a short, process-unique string. Tests use it wherever they
-// only need a distinct marker to search for in captured log output; it replaces
-// the previous uuid-based random tokens without pulling in an external dependency.
-func uniqueToken() string {
-	return "tok-" + strconv.FormatUint(tokenSeq.Add(1), 10)
 }
 
 // safeBuffer is a thread-safe bytes.Buffer for the race-condition test.

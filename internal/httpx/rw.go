@@ -1,5 +1,5 @@
 // Package httpx provides response-writer composition and path escaping shared by
-// httptap and extensions.
+// extensions.
 package httpx
 
 import (

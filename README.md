@@ -51,15 +51,14 @@ your own levels.
 | Package | Purpose |
 |---|---|
 | `github.com/prorochestvo/loginjector` | Core fan-out `Logger`, hooks, `WithMinLevel`, and error types. |
-| `github.com/prorochestvo/loginjector/extensions` | Rotating and generated-name file sinks, print sinks, Telegram, access logging, file-logger bootstrap, and Axiom. |
+| `github.com/prorochestvo/loginjector/extensions` | Rotating and generated-name file sinks, print sinks, Telegram, HTTP payload capture and panic-recovery middleware, access logging, file-logger bootstrap, and Axiom. |
 | `github.com/prorochestvo/loginjector/adapters` | Optional severity constants and parsing, plus `io.Closer` helpers. |
-| `github.com/prorochestvo/loginjector/httptap` | HTTP payload capture and panic-recovery middleware. |
 
 ## Axiom
 
 The opt-in Axiom sink batches events asynchronously on a bounded queue and delivers them on
 a best-effort basis; call `Close` or `Shutdown` before exit to flush pending events. See
-the `extensions` package documentation for options and delivery details.
+the `AxiomHandler` and `NewAxiomHandler` documentation for options, defaults and delivery details.
 
 ```go
 ax, err := extensions.NewAxiomHandler(extensions.AxiomToken(token), "app-logs")
@@ -75,9 +74,9 @@ logger := loginjector.NewLogger(adapters.Info, ax)
 - `Logger.Panicf` and `Logger.Panic` panic; they do not call `os.Exit`.
 - `MinLevel` applies to any sink that implements `LeveledHandler`; `WithMinLevel` is one
   way to add that interface. Hooks match exact levels even below the logger's minimum.
-- `httptap` always redacts its default sensitive headers and credential query parameters;
-  options can add names but cannot remove defaults.
-- `httptap.NewRecoverHandler` buffers responses until completion or flush. Streaming routes
+- `extensions.NewPayloadHandler` and `NewPayloadHandlerWithOptions` always redact the default
+  sensitive headers and credential query parameters; options can add names but not remove defaults.
+- `extensions.NewRecoverHandler` buffers responses until completion or flush. Streaming routes
   such as SSE and WebSockets should not use it.
 - Telegram delivery is a synchronous HTTP request. Axiom delivery is asynchronous and
   bounded, so close its handler during shutdown.

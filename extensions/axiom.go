@@ -15,13 +15,29 @@ import (
 var ErrAxiomClosed = axiom.ErrClosed
 
 // AxiomHandler asynchronously batches log events for delivery to Axiom. It
-// implements loginjector.LevelWriter, io.Closer, and fmt.Formatter.
+// implements loginjector.LevelWriter, io.Closer, and fmt.Formatter. Delivery is
+// best-effort on a bounded queue. Network retries can produce duplicates when
+// Axiom accepted a batch but its response was lost. Call Close or Shutdown
+// before exit to drain the queue; log.Fatal and os.Exit skip deferred cleanup
+// and can lose queued events. Tokens must be xaat- API tokens with ingest
+// permission; xapt- personal tokens are rejected.
 type AxiomHandler struct {
 	h *axiom.Handler
 }
 
 // NewAxiomHandler validates an Axiom ingest token, dataset, and options, then
 // starts a delivery worker. The token must have ingest permission.
+//
+// Defaults:
+//   - Domain: us-east-1.aws.edge.axiom.co
+//   - Batch size: 1000 events
+//   - Batch bytes: 4 MiB uncompressed
+//   - Flush interval: 1 second
+//   - Queue size: 10000 events
+//   - Queue bytes: 32 MiB
+//   - Retries: 3 after the initial attempt
+//   - Compression: gzip
+//   - Level name: adapters.Name
 func NewAxiomHandler(token AxiomToken, dataset AxiomDataset, opts ...AxiomOption) (*AxiomHandler, error) {
 	h, err := axiom.NewHandler(token, dataset, opts...)
 	if err != nil {

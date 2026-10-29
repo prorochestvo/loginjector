@@ -1,4 +1,4 @@
-package httptap
+package extensions
 
 import (
 	"bytes"
@@ -10,6 +10,36 @@ import (
 
 	"github.com/prorochestvo/loginjector/internal/httpx"
 )
+
+// interceptor captures the HTTP status code, request body, and response body
+// for logging. It embeds http.ResponseWriter to satisfy the interface; the Write
+// and WriteHeader methods are overridden to intercept the response. Optional
+// interfaces (http.Flusher, http.Hijacker, http.Pusher) are not implemented here
+// directly — WrapWithOptionalInterfaces returns a composite type that exposes
+// exactly the interfaces the underlying ResponseWriter has, so streaming and
+// websocket handlers are not silently broken by wrapping.
+//
+// The hijacked field is set to true when the connection has been hijacked via
+// the http.Hijacker interface. Once hijacked, the trailing flush guard in
+// NewPayloadHandlerWithOptions skips Flush() on the original ResponseWriter to
+// avoid calling Flush on an already-hijacked connection.
+//
+// The wroteHeader field tracks whether a final status code has been recorded
+// (by WriteHeader, Write, or Flush).
+type interceptor struct {
+	code              int
+	payload           *bytes.Buffer
+	response          *bytes.Buffer
+	request           *http.Request
+	cfg               payloadConfig
+	hijacked          bool
+	wroteHeader       bool
+	responseTruncated bool
+	// requestCap, when non-nil, is the cappedWriter used to bound the request
+	// body log; its truncated field indicates whether bytes were discarded.
+	requestCap *cappedWriter
+	http.ResponseWriter
+}
 
 // newInterceptorWithConfig creates a new interceptor that captures request and
 // response payloads according to cfg. The response status defaults to 200
@@ -57,36 +87,6 @@ func newInterceptorWithConfig(w http.ResponseWriter, r *http.Request, cfg payloa
 
 	wrapped := httpx.WrapWithOptionalInterfaces(i, w)
 	return wrapped, r, i
-}
-
-// interceptor captures the HTTP status code, request body, and response body
-// for logging. It embeds http.ResponseWriter to satisfy the interface; the Write
-// and WriteHeader methods are overridden to intercept the response. Optional
-// interfaces (http.Flusher, http.Hijacker, http.Pusher) are not implemented here
-// directly — WrapWithOptionalInterfaces returns a composite type that exposes
-// exactly the interfaces the underlying ResponseWriter has, so streaming and
-// websocket handlers are not silently broken by wrapping.
-//
-// The hijacked field is set to true when the connection has been hijacked via
-// the http.Hijacker interface. Once hijacked, the trailing flush guard in
-// NewPayloadHandlerWithOptions skips Flush() on the original ResponseWriter to
-// avoid calling Flush on an already-hijacked connection.
-//
-// The wroteHeader field tracks whether a final status code has been recorded
-// (by WriteHeader, Write, or Flush).
-type interceptor struct {
-	code              int
-	payload           *bytes.Buffer
-	response          *bytes.Buffer
-	request           *http.Request
-	cfg               payloadConfig
-	hijacked          bool
-	wroteHeader       bool
-	responseTruncated bool
-	// requestCap, when non-nil, is the cappedWriter used to bound the request
-	// body log; its truncated field indicates whether bytes were discarded.
-	requestCap *cappedWriter
-	http.ResponseWriter
 }
 
 // MarkHijacked satisfies httpx.Tap for *interceptor by setting the hijacked

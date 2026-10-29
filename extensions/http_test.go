@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/prorochestvo/loginjector"
-	"github.com/prorochestvo/loginjector/httptap"
 	"github.com/prorochestvo/loginjector/internal/httpx"
 
 	"github.com/stretchr/testify/assert"
@@ -22,8 +21,6 @@ import (
 // Compile-time assertion for accessResponseWriter.
 var _ httpx.Tap = (*accessResponseWriter)(nil)
 var _ http.ResponseWriter = (*accessResponseWriter)(nil)
-
-const logLevelInfo loginjector.LogLevel = 1
 
 // TestNewAccessHandler exercises NewAccessHandler across all enumerated scenarios.
 func TestNewAccessHandler(t *testing.T) {
@@ -447,7 +444,7 @@ func TestNewAccessHandler(t *testing.T) {
 		t.Parallel()
 
 		var accessBuf bytes.Buffer
-		l, _ := newAccessRecoverTestLogger(t)
+		l, _ := newRecoverTestLogger(t)
 
 		next := func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -457,7 +454,7 @@ func TestNewAccessHandler(t *testing.T) {
 			}
 		}
 
-		recoverH := httptap.NewRecoverHandler(l, logLevelInfo, next)
+		recoverH := NewRecoverHandler(l, logLevelInfo, next)
 		accessH := NewAccessHandler(&accessBuf, recoverH)
 
 		rec := httptest.NewRecorder()
@@ -487,6 +484,8 @@ func BenchmarkNewAccessHandler(b *testing.B) {
 		h(pw, req)
 	}
 }
+
+const logLevelInfo loginjector.LogLevel = 1
 
 // plainResponseWriter implements only http.ResponseWriter with no optional
 // interfaces. It intentionally does NOT embed *httptest.ResponseRecorder (which
@@ -626,12 +625,3 @@ func (s *statusLogWriter) Flush() {
 
 var _ http.ResponseWriter = &statusLogWriter{}
 var _ http.Flusher = &statusLogWriter{}
-
-// newAccessRecoverTestLogger creates a Logger backed by a thread-safe buffer.
-func newAccessRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
-	t.Helper()
-	buf := &bytes.Buffer{}
-	lw := &lockedWriter{w: buf}
-	l := loginjector.NewLogger(logLevelInfo, lw)
-	return l, buf
-}

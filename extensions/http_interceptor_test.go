@@ -1,4 +1,4 @@
-package httptap
+package extensions
 
 import (
 	"bufio"
@@ -20,80 +20,6 @@ import (
 
 var _ http.ResponseWriter = (*interceptor)(nil)
 var _ httpx.Tap = (*interceptor)(nil)
-
-// TestBuildBodySnippet covers buildBodySnippet including the exact-boundary edge cases.
-func TestBuildBodySnippet(t *testing.T) {
-	t.Parallel()
-
-	t.Run("zero_returns_nil", func(t *testing.T) {
-		t.Parallel()
-		buf := bytes.NewBufferString("some content")
-		result := buildBodySnippet(buf, 0, false)
-		require.Nil(t, result, "maxBytes==0 must return nil")
-	})
-
-	t.Run("negative_returns_full", func(t *testing.T) {
-		t.Parallel()
-		content := "hello world"
-		buf := bytes.NewBufferString(content)
-		result := buildBodySnippet(buf, -1, false)
-		require.Equal(t, content, string(result))
-	})
-
-	t.Run("body_exactly_at_cap_no_truncation_marker", func(t *testing.T) {
-		t.Parallel()
-		// a body of exactly N bytes captured into a cappedWriter of limit N must NOT
-		// produce a truncation marker — truncated=false means nothing was dropped.
-		const N = 10
-		content := strings.Repeat("a", N)
-		buf := bytes.NewBufferString(content)
-		result := buildBodySnippet(buf, N, false)
-		require.NotContains(t, string(result), "…[truncated]",
-			"body of exactly cap bytes must NOT produce truncation marker")
-		require.Equal(t, content, string(result))
-	})
-
-	t.Run("body_one_over_cap_has_truncation_marker", func(t *testing.T) {
-		t.Parallel()
-		// simulate cappedWriter having buffered N bytes from a body of N+1 (truncated=true).
-		const N = 10
-		buf := bytes.NewBufferString(strings.Repeat("b", N))
-		result := buildBodySnippet(buf, N, true)
-		require.Contains(t, string(result), "…[truncated]",
-			"body exceeding cap must contain truncation marker")
-	})
-
-	t.Run("truncation_marker_via_handler_boundary", func(t *testing.T) {
-		t.Parallel()
-		// integration: send exactly N bytes → no marker; send N+1 bytes → marker.
-		const N = 15
-		b1 := bytes.NewBufferString("")
-		l1 := loginjector.NewLogger(logLevelInfo, b1)
-		h1 := NewPayloadHandlerWithOptions(l1, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
-			defer func() { _ = r.Body.Close() }()
-			_, _ = io.ReadAll(r.Body)
-			_, _ = w.Write([]byte("ok"))
-		}, WithMaxRequestBody(N), WithSummaryWriter(io.Discard))
-
-		req1 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(strings.Repeat("x", N)))
-		h1(httptest.NewRecorder(), req1)
-		require.NotContains(t, b1.String(), "…[truncated]",
-			"body of exactly %d bytes must NOT produce truncation marker", N)
-
-		b2 := bytes.NewBufferString("")
-		l2 := loginjector.NewLogger(logLevelInfo, b2)
-		h2 := NewPayloadHandlerWithOptions(l2, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
-			defer func() { _ = r.Body.Close() }()
-			_, _ = io.ReadAll(r.Body)
-			_, _ = w.Write([]byte("ok"))
-		}, WithMaxRequestBody(N), WithSummaryWriter(io.Discard))
-
-		req2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(strings.Repeat("x", N+1)))
-		h2(httptest.NewRecorder(), req2)
-		require.Contains(t, b2.String(), "…[truncated]",
-			"body of %d bytes (one over cap) must produce truncation marker", N+1)
-	})
-}
 
 func TestWrapInterceptor(t *testing.T) {
 	t.Parallel()
@@ -367,60 +293,79 @@ func TestWrapInterceptor(t *testing.T) {
 	})
 }
 
-// logLevelInfo is a package-wide test fixture used across httptap tests.
-const logLevelInfo loginjector.LogLevel = 1
+// TestBuildBodySnippet covers buildBodySnippet including the exact-boundary edge cases.
+func TestBuildBodySnippet(t *testing.T) {
+	t.Parallel()
 
-// plainResponseWriter implements only http.ResponseWriter with no optional
-// interfaces. It intentionally does NOT embed *httptest.ResponseRecorder (which
-// is itself an http.Flusher), so type-asserting the wrapped interceptor to
-// http.Flusher returns false.
-type plainResponseWriter struct {
-	rec *httptest.ResponseRecorder
+	t.Run("zero_returns_nil", func(t *testing.T) {
+		t.Parallel()
+		buf := bytes.NewBufferString("some content")
+		result := buildBodySnippet(buf, 0, false)
+		require.Nil(t, result, "maxBytes==0 must return nil")
+	})
+
+	t.Run("negative_returns_full", func(t *testing.T) {
+		t.Parallel()
+		content := "hello world"
+		buf := bytes.NewBufferString(content)
+		result := buildBodySnippet(buf, -1, false)
+		require.Equal(t, content, string(result))
+	})
+
+	t.Run("body_exactly_at_cap_no_truncation_marker", func(t *testing.T) {
+		t.Parallel()
+		// a body of exactly N bytes captured into a cappedWriter of limit N must NOT
+		// produce a truncation marker — truncated=false means nothing was dropped.
+		const N = 10
+		content := strings.Repeat("a", N)
+		buf := bytes.NewBufferString(content)
+		result := buildBodySnippet(buf, N, false)
+		require.NotContains(t, string(result), "…[truncated]",
+			"body of exactly cap bytes must NOT produce truncation marker")
+		require.Equal(t, content, string(result))
+	})
+
+	t.Run("body_one_over_cap_has_truncation_marker", func(t *testing.T) {
+		t.Parallel()
+		// simulate cappedWriter having buffered N bytes from a body of N+1 (truncated=true).
+		const N = 10
+		buf := bytes.NewBufferString(strings.Repeat("b", N))
+		result := buildBodySnippet(buf, N, true)
+		require.Contains(t, string(result), "…[truncated]",
+			"body exceeding cap must contain truncation marker")
+	})
+
+	t.Run("truncation_marker_via_handler_boundary", func(t *testing.T) {
+		t.Parallel()
+		// integration: send exactly N bytes → no marker; send N+1 bytes → marker.
+		const N = 15
+		b1 := bytes.NewBufferString("")
+		l1 := loginjector.NewLogger(logLevelInfo, b1)
+		h1 := NewPayloadHandlerWithOptions(l1, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			_, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte("ok"))
+		}, WithMaxRequestBody(N), WithSummaryWriter(io.Discard))
+
+		req1 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(strings.Repeat("x", N)))
+		h1(httptest.NewRecorder(), req1)
+		require.NotContains(t, b1.String(), "…[truncated]",
+			"body of exactly %d bytes must NOT produce truncation marker", N)
+
+		b2 := bytes.NewBufferString("")
+		l2 := loginjector.NewLogger(logLevelInfo, b2)
+		h2 := NewPayloadHandlerWithOptions(l2, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
+			defer func() { _ = r.Body.Close() }()
+			_, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte("ok"))
+		}, WithMaxRequestBody(N), WithSummaryWriter(io.Discard))
+
+		req2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(strings.Repeat("x", N+1)))
+		h2(httptest.NewRecorder(), req2)
+		require.Contains(t, b2.String(), "…[truncated]",
+			"body of %d bytes (one over cap) must produce truncation marker", N+1)
+	})
 }
-
-func (p *plainResponseWriter) Header() http.Header         { return p.rec.Header() }
-func (p *plainResponseWriter) Write(b []byte) (int, error) { return p.rec.Write(b) }
-func (p *plainResponseWriter) WriteHeader(code int)        { p.rec.WriteHeader(code) }
-
-var _ http.ResponseWriter = &plainResponseWriter{} // compile-time check
-
-type fakeFlusherWriter struct {
-	*httptest.ResponseRecorder
-	onFlush func()
-}
-
-func (f *fakeFlusherWriter) Flush() { f.onFlush() }
-
-var _ http.ResponseWriter = &fakeFlusherWriter{} // compile-time check
-var _ http.Flusher = &fakeFlusherWriter{}        // compile-time check
-
-type fakeHijackerWriter struct {
-	*httptest.ResponseRecorder
-}
-
-func (h *fakeHijackerWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	// return a pair of connected net.Conn via net.Pipe for a realistic response.
-	server, client := net.Pipe()
-	_ = client.Close()
-	br := bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server))
-	return server, br, nil
-}
-
-var _ http.ResponseWriter = &fakeHijackerWriter{} // compile-time check
-var _ http.Hijacker = &fakeHijackerWriter{}       // compile-time check
-
-type fakePusherWriter struct {
-	*httptest.ResponseRecorder
-	onPush func(string)
-}
-
-func (p *fakePusherWriter) Push(target string, _ *http.PushOptions) error {
-	p.onPush(target)
-	return nil
-}
-
-var _ http.ResponseWriter = &fakePusherWriter{} // compile-time check
-var _ http.Pusher = &fakePusherWriter{}         // compile-time check
 
 // fakeComboFlusherHijacker implements http.ResponseWriter + http.Flusher + http.Hijacker.
 type fakeComboFlusherHijacker struct {
@@ -485,77 +430,3 @@ func (f *fakeComboHijackerPusher) Push(target string, _ *http.PushOptions) error
 var _ http.ResponseWriter = &fakeComboHijackerPusher{} // compile-time check
 var _ http.Hijacker = &fakeComboHijackerPusher{}       // compile-time check
 var _ http.Pusher = &fakeComboHijackerPusher{}         // compile-time check
-
-// fakeComboAllThree implements http.ResponseWriter + http.Flusher + http.Hijacker + http.Pusher.
-type fakeComboAllThree struct {
-	rec     *httptest.ResponseRecorder
-	onFlush func()
-	onPush  func(string)
-}
-
-func (f *fakeComboAllThree) Header() http.Header         { return f.rec.Header() }
-func (f *fakeComboAllThree) Write(b []byte) (int, error) { return f.rec.Write(b) }
-func (f *fakeComboAllThree) WriteHeader(code int)        { f.rec.WriteHeader(code) }
-func (f *fakeComboAllThree) Flush()                      { f.onFlush() }
-func (f *fakeComboAllThree) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	server, client := net.Pipe()
-	_ = client.Close()
-	br := bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server))
-	return server, br, nil
-}
-func (f *fakeComboAllThree) Push(target string, _ *http.PushOptions) error {
-	f.onPush(target)
-	return nil
-}
-
-var _ http.ResponseWriter = &fakeComboAllThree{} // compile-time check
-var _ http.Flusher = &fakeComboAllThree{}        // compile-time check
-var _ http.Hijacker = &fakeComboAllThree{}       // compile-time check
-var _ http.Pusher = &fakeComboAllThree{}         // compile-time check
-
-// statusLogWriter is a fake http.ResponseWriter + http.Flusher that records
-// every WriteHeader call (including 1xx informational), modeling net/http's
-// 1xx semantics (informational codes do not commit a final status).
-type statusLogWriter struct {
-	*httptest.ResponseRecorder
-	statusCodes     []int
-	headerSnapshots []http.Header
-	finalStatus     int
-	finalHeaders    http.Header
-	body            []byte
-	flushed         bool
-}
-
-func newStatusLogWriter() *statusLogWriter {
-	return &statusLogWriter{
-		ResponseRecorder: httptest.NewRecorder(),
-		statusCodes:      make([]int, 0),
-		headerSnapshots:  make([]http.Header, 0),
-	}
-}
-
-func (s *statusLogWriter) WriteHeader(code int) {
-	s.statusCodes = append(s.statusCodes, code)
-	// Record a header snapshot at each WriteHeader call.
-	headerSnapshot := s.Header().Clone()
-	s.headerSnapshots = append(s.headerSnapshots, headerSnapshot)
-	// Track the final status (the last non-1xx code).
-	if code < 100 || code > 199 || code == 101 {
-		s.finalStatus = code
-		s.finalHeaders = headerSnapshot
-	}
-	// Don't call the recorder's WriteHeader; it treats all codes as final.
-	// Instead, just record the code.
-}
-
-func (s *statusLogWriter) Write(b []byte) (int, error) {
-	s.body = append(s.body, b...)
-	return s.ResponseRecorder.Write(b)
-}
-
-func (s *statusLogWriter) Flush() {
-	s.flushed = true
-}
-
-var _ http.ResponseWriter = &statusLogWriter{}
-var _ http.Flusher = &statusLogWriter{}
