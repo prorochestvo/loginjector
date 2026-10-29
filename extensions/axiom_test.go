@@ -135,7 +135,8 @@ func TestAxiomHandler_Close(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	require.ErrorIs(t, ax.Flush(ctx), ErrAxiomClosed)
-	require.ErrorIs(t, ax.Shutdown(ctx), ErrAxiomClosed)
+	require.NoError(t, ax.Close())
+	require.NoError(t, ax.Shutdown(ctx))
 }
 
 func TestAxiomHandler_Format(t *testing.T) {

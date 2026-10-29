@@ -10,7 +10,7 @@ import (
 	"github.com/prorochestvo/loginjector/internal/integrations/axiom"
 )
 
-// ErrAxiomClosed is returned by Flush and Shutdown after Close or Shutdown.
+// ErrAxiomClosed is returned by Flush after Close or Shutdown has started.
 // Write after closure is dropped and does not return this error.
 var ErrAxiomClosed = axiom.ErrClosed
 
