@@ -1625,7 +1625,7 @@ func TestNewFileLogger(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
-		// the logger must have exactly one handler (the file handler)
+		// WithoutPrinter wins over WithPrinterOptions: nothing reaches the printer output
 		_, err = l.WriteLog(minLevel, []byte("without printer"))
 		require.NoError(t, err)
 		require.Empty(t, buf.String())
@@ -2104,6 +2104,9 @@ var tokenSeq atomic.Uint64
 
 type probe struct{ buf bytes.Buffer }
 
+func (p *probe) Write(b []byte) (int, error) { return p.buf.Write(b) }
+func (p *probe) String() string              { return p.buf.String() }
+
 // testRotatingFileHandlerSeedFromDisk verifies that a handler constructed when a
 // log file already exists on disk does not over-count. With the size properly
 // seeded, the first write appends to file 1, crosses the threshold, and advances
@@ -2471,9 +2474,6 @@ func extractFilesOrFail(folder string) (map[string]string, error) {
 	}
 	return r, nil
 }
-
-func (p *probe) Write(b []byte) (int, error) { return p.buf.Write(b) }
-func (p *probe) String() string              { return p.buf.String() }
 
 // readGzOrFail decompresses a gzip file and returns its plaintext, failing the test on
 // any error. Compression tests decompress and compare bytes because an existence-only

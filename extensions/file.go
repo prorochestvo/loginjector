@@ -611,7 +611,7 @@ const defaultFileExtension = "log"
 const gzipExtension = "gz"
 const tmpExtension = "tmp"
 
-// fileLoggerConfig holds the resolved configuration for NewFileLogger.
+// rotatingFileConfig holds the resolved configuration for RotatingFileHandler.
 type rotatingFileConfig struct {
 	maxFileSize uint32
 	maxFiles    int
@@ -627,6 +627,7 @@ type backupEntry struct {
 	mtime time.Time
 }
 
+// fileLoggerConfig holds the resolved configuration for NewFileLogger.
 type fileLoggerConfig struct {
 	maxFileCapacity    uint32
 	maxFilesInFolder   int
