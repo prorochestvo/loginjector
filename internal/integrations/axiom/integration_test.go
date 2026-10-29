@@ -11,7 +11,7 @@ import (
 
 	"github.com/prorochestvo/loginjector"
 	"github.com/prorochestvo/loginjector/adapters"
-	"github.com/prorochestvo/loginjector/axiom"
+	"github.com/prorochestvo/loginjector/internal/integrations/axiom"
 	"github.com/stretchr/testify/require"
 )
 

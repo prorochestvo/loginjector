@@ -24,7 +24,8 @@ import (
 	"github.com/prorochestvo/loginjector/adapters"
 )
 
-// ErrClosed is returned by Flush after shutdown has started.
+// ErrClosed is returned by Flush after shutdown has started and by a repeated
+// Shutdown call after the first shutdown completes.
 var ErrClosed = errors.New("axiom: handler is closed")
 
 // Handler asynchronously batches events for delivery to Axiom. The zero value
@@ -33,6 +34,7 @@ type Handler struct {
 	cfg          *config
 	mu           sync.RWMutex
 	closed       bool
+	shutdownCall bool
 	queue        chan queuedEvent
 	wake         chan struct{}
 	done         chan struct{}
@@ -196,8 +198,20 @@ func (h *Handler) Flush(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown stops admission, drains queued events, and waits for the worker.
+// Shutdown stops admission, drains queued events, and waits for the worker. A call after a
+// completed shutdown returns ErrClosed.
 func (h *Handler) Shutdown(ctx context.Context) error {
+	h.mu.Lock()
+	alreadyCalled := h.shutdownCall
+	h.shutdownCall = true
+	h.mu.Unlock()
+	if alreadyCalled {
+		select {
+		case <-h.done:
+			return ErrClosed
+		default:
+		}
+	}
 	h.shutdownOnce.Do(func() {
 		h.mu.Lock()
 		h.closed = true
@@ -231,14 +245,19 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 	}
 }
 
-// Close shuts down the handler with a five second deadline.
+// Close shuts down the handler with a five second deadline. A repeated Close returns nil.
 func (h *Handler) Close() error {
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
 		5*time.Second,
 	)
 	defer cancel()
-	return h.Shutdown(ctx)
+	err := h.Shutdown(ctx)
+	// Close is idempotent; only Shutdown reports a repeated call.
+	if errors.Is(err, ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 // Stats returns the current event counters.
