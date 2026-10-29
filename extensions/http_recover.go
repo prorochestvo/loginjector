@@ -15,6 +15,26 @@ import (
 // RecoverOption configures NewRecoverHandler.
 type RecoverOption func(*recoverConfig)
 
+// WithFallbackResponse overrides the response body written on panic recovery.
+// The body is sent verbatim. Default is `{"error":"something went wrong"}`.
+// Pair with WithFallbackContentType if the body is not JSON.
+func WithFallbackResponse(body []byte) RecoverOption {
+	return func(c *recoverConfig) { c.fallbackBody = body }
+}
+
+// WithFallbackContentType overrides the Content-Type header set on the panic
+// response. Default is "application/json; charset=utf-8".
+func WithFallbackContentType(ct string) RecoverOption {
+	return func(c *recoverConfig) { c.contentType = ct }
+}
+
+// WithPublicMessage overrides the message embedded in the PublicError that is
+// joined into the logged error chain. It does NOT change the response body —
+// use WithFallbackResponse for that. Default is "something went wrong".
+func WithPublicMessage(msg string) RecoverOption {
+	return func(c *recoverConfig) { c.publicMessage = msg }
+}
+
 // NewRecoverHandler returns an HTTP middleware that recovers any panic in next,
 // logs the panic with a stack trace via logger at level, and responds with HTTP
 // 500 plus a JSON body.
@@ -85,7 +105,7 @@ func NewRecoverHandler(
 				)
 				logMsg := joined.Error() + " " + ste.Runtime() + "\n" + ste.Stack()
 				if _, err := logger.WriteLog(level, []byte(logMsg)); err != nil {
-					println(err.Error()) // matches the existing convention.
+					println(err.Error()) // the logger failed; stderr is the last resort.
 				}
 				if rrw.hijacked {
 					return
@@ -121,26 +141,6 @@ func NewRecoverHandler(
 
 		next(wrapped, r)
 	}
-}
-
-// WithFallbackResponse overrides the response body written on panic recovery.
-// The body is sent verbatim. Default is `{"error":"something went wrong"}`.
-// Pair with WithFallbackContentType if the body is not JSON.
-func WithFallbackResponse(body []byte) RecoverOption {
-	return func(c *recoverConfig) { c.fallbackBody = body }
-}
-
-// WithFallbackContentType overrides the Content-Type header set on the panic
-// response. Default is "application/json; charset=utf-8".
-func WithFallbackContentType(ct string) RecoverOption {
-	return func(c *recoverConfig) { c.contentType = ct }
-}
-
-// WithPublicMessage overrides the message embedded in the PublicError that is
-// joined into the logged error chain. It does NOT change the response body —
-// use WithFallbackResponse for that. Default is "something went wrong".
-func WithPublicMessage(msg string) RecoverOption {
-	return func(c *recoverConfig) { c.publicMessage = msg }
 }
 
 // recoverConfig holds the tunables for NewRecoverHandler.

@@ -92,8 +92,7 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 // Cookie, Set-Cookie, X-Api-Key, and X-Auth-Token headers are always redacted.
 // Query parameters access_token, refresh_token, id_token, client_secret, api_key,
 // apikey, and password are logged with values redacted as [REDACTED].
-// The default sensitive header names and credential query parameters are always
-// redacted case-insensitively; options only add names.
+// Matching is case-insensitive; options only add names.
 // This function is equivalent to calling NewPayloadHandlerWithOptions with no
 // options.
 //

@@ -22,8 +22,6 @@ import (
 var _ httpx.Tap = (*accessResponseWriter)(nil)
 var _ http.ResponseWriter = (*accessResponseWriter)(nil)
 
-const logLevelInfo loginjector.LogLevel = 1
-
 // TestNewAccessHandler exercises NewAccessHandler across all enumerated scenarios.
 func TestNewAccessHandler(t *testing.T) {
 	t.Parallel()
@@ -486,6 +484,8 @@ func BenchmarkNewAccessHandler(b *testing.B) {
 		h(pw, req)
 	}
 }
+
+const logLevelInfo loginjector.LogLevel = 1
 
 // plainResponseWriter implements only http.ResponseWriter with no optional
 // interfaces. It intentionally does NOT embed *httptest.ResponseRecorder (which

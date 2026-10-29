@@ -77,13 +77,13 @@ func ExampleAxiomHandler_withMinLevel() {
 // redaction, and a silent per-handler summary.
 func ExampleNewPayloadHandlerWithOptions() {
 	logger := loginjector.NewLogger(adapters.Info)
-	myHttpHandler := func(w http.ResponseWriter, _ *http.Request) {
+	myHTTPHandler := func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}
 	_ = extensions.NewPayloadHandlerWithOptions(
 		logger,
 		adapters.Info,
-		myHttpHandler,
+		myHTTPHandler,
 		extensions.WithMaxRequestBody(4096),  // cap request body at 4 KiB
 		extensions.WithMaxResponseBody(4096), // cap response body at 4 KiB
 		extensions.WithRedactHeaders("X-Telegram-Init-Data"),
