@@ -25,7 +25,7 @@ there is no binary, database, or server.
 | `levels/` | optional `Debug`..`Critical` ladder, `Parse`/`Name` |
 | `httptap/` | opt-in HTTP middleware: payload, access, recover; the root package never imports it |
 | `internal/` | stack-trace parsing for `error.go`; `internal/synctest` is test-only scaffolding |
-| `gorules/`, `scripts/` | custom lint rules (ruleguard DSL) and text-level checks |
+| `configs/linter/`, `scripts/` | custom lint rules (ruleguard DSL) and text-level checks |
 
 ## Tripwires
 
@@ -54,8 +54,9 @@ there is no binary, database, or server.
 - `httptap` redaction: the default header and query-parameter sets in
   `httptap/redact.go` are always on and case-insensitive; options only add names. Do not
   weaken them.
-- Runtime dependencies: standard library only (`testify` is test-only; `gorules` needs
-  `go-ruleguard/dsl` and is never compiled); the module builds with `CGO_ENABLED=0`.
+- Runtime dependencies: standard library only (`testify` is test-only;
+  `configs/linter/custom-rules.go` needs `go-ruleguard/dsl` and is never compiled);
+  the module builds with `CGO_ENABLED=0`.
 - Keep the `…ForRaceCondition` tests when touching the fan-out or the file handlers.
 - `TestFileByFormatHandlerV2` predates the one-`Test*`-per-symbol rule; do not rename
   legacy tests in unrelated changes.
