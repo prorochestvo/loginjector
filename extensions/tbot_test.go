@@ -1,4 +1,4 @@
-package loginjector
+package extensions
 
 import (
 	"os"

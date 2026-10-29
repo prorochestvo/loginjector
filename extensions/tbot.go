@@ -1,4 +1,4 @@
-package loginjector
+package extensions
 
 import (
 	"bytes"
@@ -14,6 +14,9 @@ import (
 	"github.com/prorochestvo/loginjector/internal/sink"
 )
 
+// TelegramHandler returns a writer that sends each message as a Telegram document.
+// Delivery is a synchronous HTTP POST with a 20-second timeout, so a matching message
+// blocks its caller. Transport errors redact the bot token.
 func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Writer {
 	const telegramAPI = "https://api.telegram.org/bot"
 	url := fmt.Sprintf("%s%s/sendDocument", telegramAPI, botToken)
@@ -90,5 +93,3 @@ func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Wri
 	})
 	return w
 }
-
-// rotatingFileConfig holds the resolved configuration for RotatingFileHandler.
