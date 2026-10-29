@@ -9,9 +9,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/prorochestvo/loginjector/internal/httpx"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Compile-time assertion for accessResponseWriter.
+var _ httpx.Tap = (*accessResponseWriter)(nil)
 
 // TestNewAccessHandler exercises NewAccessHandler across all enumerated scenarios.
 func TestNewAccessHandler(t *testing.T) {

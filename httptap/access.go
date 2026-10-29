@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/prorochestvo/loginjector/internal/httpx"
 )
 
 // NewAccessHandler returns an HTTP middleware that emits one line per request
@@ -45,11 +47,11 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		method := r.Method
-		path := escapeControl(r.URL.Path)
+		path := httpx.EscapeControl(r.URL.Path)
 		start := time.Now()
 
 		arw := &accessResponseWriter{ResponseWriter: w}
-		wrapped := wrapWithOptionalInterfaces(arw, w)
+		wrapped := httpx.WrapWithOptionalInterfaces(arw, w)
 
 		completed := false
 		defer func() {
@@ -74,8 +76,8 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 
 // accessResponseWriter is a lightweight http.ResponseWriter wrapper that records
 // only the status code. It does not buffer request or response bodies. It
-// satisfies the hijackMarker interface so it can be passed to
-// wrapWithOptionalInterfaces.
+// satisfies httpx.Tap so it can be passed to
+// httpx.WrapWithOptionalInterfaces.
 type accessResponseWriter struct {
 	http.ResponseWriter
 	statusCode  int
@@ -88,7 +90,7 @@ type accessResponseWriter struct {
 // calls are silent no-ops, mirroring net/http's own "WriteHeader more than once"
 // handling.
 func (a *accessResponseWriter) WriteHeader(code int) {
-	if isInformational(code) {
+	if httpx.IsInformational(code) {
 		// forward 1xx without recording
 		a.ResponseWriter.WriteHeader(code)
 		return
@@ -111,13 +113,13 @@ func (a *accessResponseWriter) Write(b []byte) (int, error) {
 	return a.ResponseWriter.Write(b)
 }
 
-// markHijacked satisfies the hijackMarker interface; it records that the
+// MarkHijacked satisfies httpx.Tap; it records that the
 // connection has been hijacked so the field is available for future use.
-func (a *accessResponseWriter) markHijacked() { a.hijacked = true }
+func (a *accessResponseWriter) MarkHijacked() { a.hijacked = true }
 
-// beforeFlush records the implicit 200 that the real Flush commits when no
+// BeforeFlush records the implicit 200 that the real Flush commits when no
 // final status has been written yet.
-func (a *accessResponseWriter) beforeFlush() {
+func (a *accessResponseWriter) BeforeFlush() {
 	if a.hijacked {
 		return
 	}

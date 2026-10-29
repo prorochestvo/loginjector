@@ -240,32 +240,3 @@ func (s *statusLogWriter) Flush() {
 
 var _ http.ResponseWriter = &statusLogWriter{}
 var _ http.Flusher = &statusLogWriter{}
-
-// hookRecordingBase is a test stub that implements tapWriter and records
-// beforeFlush calls for testing the flush hook.
-type hookRecordingBase struct {
-	onBeforeFlush func()
-}
-
-func (h *hookRecordingBase) Header() http.Header         { return httptest.NewRecorder().Header() }
-func (h *hookRecordingBase) Write(b []byte) (int, error) { return len(b), nil }
-func (h *hookRecordingBase) WriteHeader(_ int)           {}
-func (h *hookRecordingBase) markHijacked()               {}
-func (h *hookRecordingBase) beforeFlush() {
-	if h.onBeforeFlush != nil {
-		h.onBeforeFlush()
-	}
-}
-
-var _ tapWriter = &hookRecordingBase{}
-
-// recordingFlusher is a test stub that records Flush calls.
-type recordingFlusher struct {
-	onFlush func()
-}
-
-func (r *recordingFlusher) Flush() {
-	if r.onFlush != nil {
-		r.onFlush()
-	}
-}

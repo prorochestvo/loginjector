@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/prorochestvo/loginjector/internal/httpx"
+
 	loginjector "github.com/prorochestvo/loginjector"
 )
 
@@ -62,7 +64,7 @@ func NewRecoverHandler(
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		rrw := &recoverResponseWriter{ResponseWriter: w}
-		wrapped := wrapWithOptionalInterfaces(rrw, w)
+		wrapped := httpx.WrapWithOptionalInterfaces(rrw, w)
 
 		defer func() {
 			pv := recover()
@@ -104,7 +106,7 @@ func NewRecoverHandler(
 				return
 			}
 			if rrw.committed {
-				// already flushed by beforeFlush; copy any trailers set after the flush.
+				// already flushed by BeforeFlush; copy any trailers set after the flush.
 				realHeader := w.Header()
 				copyTrailers(realHeader, rrw.headers, rrw.snapshot)
 				return
@@ -166,7 +168,7 @@ type RecoverOption func(*recoverConfig)
 // status is committed, capturing header deletions and preserving the exact headers
 // that were in effect when WriteHeader was called.
 //
-// The committed field tracks whether beforeFlush has been called and the buffered
+// The committed field tracks whether BeforeFlush has been called and the buffered
 // response has been flushed to the real writer. After commit, all writes forward
 // to the real writer.
 type recoverResponseWriter struct {
@@ -195,7 +197,7 @@ func (rrw *recoverResponseWriter) Header() http.Header {
 // After commit, subsequent calls are forwarded to the real writer (which reports
 // the superfluous call). Before commit, they are silent no-ops.
 func (rrw *recoverResponseWriter) WriteHeader(code int) {
-	if isInformational(code) {
+	if httpx.IsInformational(code) {
 		rrw.writeInformational(code)
 		return
 	}
@@ -228,14 +230,14 @@ func (rrw *recoverResponseWriter) Write(b []byte) (int, error) {
 	return rrw.body.Write(b)
 }
 
-// markHijacked satisfies tapWriter so wrapWithOptionalInterfaces can set the
+// MarkHijacked satisfies httpx.Tap so WrapWithOptionalInterfaces can set the
 // hijacked flag when a downstream handler calls Hijack.
-func (rrw *recoverResponseWriter) markHijacked() { rrw.hijacked = true }
+func (rrw *recoverResponseWriter) MarkHijacked() { rrw.hijacked = true }
 
-// beforeFlush satisfies tapWriter. It commits the buffered response when not
+// BeforeFlush satisfies httpx.Tap. It commits the buffered response when not
 // already hijacked or committed, then resets the buffer so subsequent writes
 // forward to the real writer.
-func (rrw *recoverResponseWriter) beforeFlush() {
+func (rrw *recoverResponseWriter) BeforeFlush() {
 	if rrw.hijacked || rrw.committed {
 		return
 	}
@@ -263,7 +265,7 @@ func (rrw *recoverResponseWriter) beforeFlush() {
 
 // flushTo copies the buffered headers, status, and body to the real writer on
 // the clean (no-panic) path. If the response is already committed (flushed via
-// beforeFlush), this is a no-op. If next never called WriteHeader, no explicit
+// BeforeFlush), this is a no-op. If next never called WriteHeader, no explicit
 // status is written here: net/http issues an implicit 200 when the body write
 // triggers the first header flush, faithfully reproducing the handler's
 // observable behaviour.

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/prorochestvo/loginjector/internal/httpx"
+
 	loginjector "github.com/prorochestvo/loginjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +17,7 @@ import (
 
 // compile-time assertions for recoverResponseWriter.
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
+var _ httpx.Tap = (*recoverResponseWriter)(nil)
 
 // newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
 func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
@@ -220,7 +223,7 @@ func TestNewRecoverHandler(t *testing.T) {
 
 		h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
 
-		// wrapWithOptionalInterfaces forwards Flush to the real underlying writer's Flusher.
+		// WrapWithOptionalInterfaces forwards Flush to the real underlying writer's Flusher.
 		// Calling Flush does NOT flush buffered body bytes — it delegates to the real Flusher.
 		require.True(t, flushed, "Flush must be forwarded to the real underlying Flusher")
 	})

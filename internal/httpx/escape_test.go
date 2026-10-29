@@ -1,4 +1,4 @@
-package httptap
+package httpx
 
 import (
 	"testing"
@@ -11,35 +11,35 @@ func TestEscapeControl(t *testing.T) {
 
 	t.Run("c1_rune_escaped", func(t *testing.T) {
 		t.Parallel()
-		assert.Equal(t, "a%C2%9Bb", escapeControl("a\u009bb"), "U+009B CSI must be percent-encoded")
-		assert.Equal(t, "a%C2%80b", escapeControl("a\u0080b"), "U+0080 must be percent-encoded")
-		assert.Equal(t, "a\u00a0b", escapeControl("a\u00a0b"), "U+00A0 is not a control and stays as-is")
+		assert.Equal(t, "a%C2%9Bb", EscapeControl("a\u009bb"), "U+009B CSI must be percent-encoded")
+		assert.Equal(t, "a%C2%80b", EscapeControl("a\u0080b"), "U+0080 must be percent-encoded")
+		assert.Equal(t, "a\u00a0b", EscapeControl("a\u00a0b"), "U+00A0 is not a control and stays as-is")
 	})
 
 	t.Run("plain_ascii_unchanged", func(t *testing.T) {
 		t.Parallel()
 		input := "hello-world"
-		assert.Equal(t, input, escapeControl(input))
+		assert.Equal(t, input, EscapeControl(input))
 	})
 
 	t.Run("non_ascii_unchanged", func(t *testing.T) {
 		t.Parallel()
 		input := "/café"
-		assert.Equal(t, input, escapeControl(input))
+		assert.Equal(t, input, EscapeControl(input))
 	})
 
 	t.Run("newline_encoded", func(t *testing.T) {
 		t.Parallel()
 		input := "hello\nworld"
 		expected := "hello%0Aworld"
-		assert.Equal(t, expected, escapeControl(input))
+		assert.Equal(t, expected, EscapeControl(input))
 	})
 
 	t.Run("cr_tab_nul_del", func(t *testing.T) {
 		t.Parallel()
 		// Test CR, TAB, NUL, DEL
 		input := "a\rb\tc\x00d\x7Fe"
-		output := escapeControl(input)
+		output := EscapeControl(input)
 		assert.Contains(t, output, "%0D") // CR
 		assert.Contains(t, output, "%09") // TAB
 		assert.Contains(t, output, "%00") // NUL
@@ -55,7 +55,7 @@ func TestEscapeControl(t *testing.T) {
 		// U+2028 (line separator) and U+2029 (paragraph separator)
 		// These are multibyte UTF-8 sequences
 		input := "a b c"
-		output := escapeControl(input)
+		output := EscapeControl(input)
 		// U+2028 encodes as E2 80 A8 in UTF-8
 		assert.Contains(t, output, "%E2%80%A8")
 		// U+2029 encodes as E2 80 A9 in UTF-8
@@ -67,7 +67,7 @@ func TestEscapeControl(t *testing.T) {
 		// A lone 0xFF byte is invalid UTF-8 and a control byte (>=0x80)
 		// It should be escaped as %FF
 		input := "a\xFFb"
-		output := escapeControl(input)
+		output := EscapeControl(input)
 		assert.Equal(t, "a%FFb", output)
 	})
 }

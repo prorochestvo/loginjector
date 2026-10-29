@@ -1,16 +1,16 @@
-package httptap
+package httpx
 
 import (
 	"strings"
 	"unicode/utf8"
 )
 
-// escapeControl percent-encodes, one uppercase %XX per byte, every ASCII
+// EscapeControl percent-encodes, one uppercase %XX per byte, every ASCII
 // control byte (0x00-0x1F, 0x7F), every C1 control rune (U+0080-U+009F),
 // U+2028, U+2029, and every byte that is not part of valid UTF-8. Other
 // input, including valid non-control UTF-8, is kept as-is; a string with
 // nothing to escape is returned unchanged without allocating.
-func escapeControl(s string) string {
+func EscapeControl(s string) string {
 	var hasControl bool
 	for i := 0; i < len(s); i++ {
 		b := s[i]
