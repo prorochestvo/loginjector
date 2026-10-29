@@ -6,6 +6,7 @@ import (
 	"github.com/prorochestvo/loginjector"
 	"github.com/prorochestvo/loginjector/adapters"
 	"github.com/prorochestvo/loginjector/axiom"
+	"github.com/prorochestvo/loginjector/extensions"
 )
 
 func ExampleNewHandler() {
@@ -23,7 +24,7 @@ func ExampleNewHandler() {
 	defer ax.Close()
 	logger := loginjector.NewLogger(
 		adapters.Info,
-		loginjector.TimestampedPrintHandler(),
+		extensions.TimestampedPrintHandler(),
 		ax,
 	)
 	std := logger.StdLog(adapters.Info, "")

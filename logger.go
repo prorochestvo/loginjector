@@ -62,7 +62,8 @@ type Logger struct {
 }
 
 // NewLogger creates a new logger with the given minimum log level and handlers.
-// If no handlers are provided, a default timestamped stdout handler is added.
+// If no handlers are provided, a default timestamped stdout handler is added,
+// equivalent to extensions.TimestampedPrintHandler.
 // Each handler is wrapped so the logger never calls its Write concurrently, which
 // makes logging safe from multiple goroutines even with non-thread-safe handlers.
 // Multiple registrations of the same pointer-type sink share one mutex.
@@ -160,8 +161,9 @@ func (l *Logger) Hook(writer io.Writer, level LogLevel, additional ...LogLevel) 
 // StdLog returns a standard-library *log.Logger that writes through this logger at
 // the given level, with the given prefix. It is configured with log.Lmsgprefix and
 // no date/time flags: the emitter contributes only the prefix, and any timestamp is
-// added by the sink (e.g. TimestampedPrintHandler or TimestampedHandler), so a line
-// is never stamped twice. Use it to hand a *log.Logger to code that expects one —
+// added by the sink (e.g. extensions.TimestampedPrintHandler or
+// extensions.TimestampedHandler), so a line is never stamped twice. Use it to hand
+// a *log.Logger to code that expects one —
 // for example a database driver's logger — without hand-wiring the flags:
 //
 //	dbLog := logger.StdLog(adapters.Info, "sqlite ")

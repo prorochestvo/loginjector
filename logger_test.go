@@ -529,10 +529,7 @@ func TestLogger_StdLog(t *testing.T) {
 			time.UTC,
 		)
 		inner := &bytes.Buffer{}
-		stamped := TimestampedHandler(
-			inner,
-			withClock(func() time.Time { return fixed }),
-		)
+		stamped := sink.NewTimestamped(inner, sink.DefaultTimeLayout, func() time.Time { return fixed })
 		l := NewLogger(logLevelInfo, stamped)
 
 		dbLog := l.StdLog(logLevelInfo, "sqlite ")
@@ -1426,12 +1423,7 @@ func TestWithMinLevel(t *testing.T) {
 		)
 		handler := WithMinLevel(
 			3,
-			TimestampedPrintHandler(
-				withClock(func() time.Time { return fixed }),
-				WithOutput(
-					&output,
-				),
-			),
+			sink.NewTimestamped(&output, sink.DefaultTimeLayout, func() time.Time { return fixed }),
 		)
 		l := NewLogger(0, handler)
 

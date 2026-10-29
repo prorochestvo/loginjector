@@ -1400,7 +1400,7 @@ func TestNewFileLogger(t *testing.T) {
 
 		_, err := NewFileLogger(dir, "redirect", minLevel,
 			WithStdLogRedirect(redirectLevel),
-			WithPrinterOptions(loginjector.WithOutput(&buf)),
+			WithPrinterOptions(WithOutput(&buf)),
 		)
 		require.NoError(t, err)
 
@@ -1420,7 +1420,7 @@ func TestNewFileLogger(t *testing.T) {
 
 		dir := t.TempDir()
 		var buf bytes.Buffer
-		l, err := NewFileLogger(dir, "noprint", minLevel, WithoutPrinter(), WithPrinterOptions(loginjector.WithOutput(&buf)))
+		l, err := NewFileLogger(dir, "noprint", minLevel, WithoutPrinter(), WithPrinterOptions(WithOutput(&buf)))
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
@@ -1435,7 +1435,7 @@ func TestNewFileLogger(t *testing.T) {
 
 		dir := t.TempDir()
 		var buf bytes.Buffer
-		l, err := NewFileLogger(dir, "withprint", minLevel, WithPrinterOptions(loginjector.WithOutput(&buf)))
+		l, err := NewFileLogger(dir, "withprint", minLevel, WithPrinterOptions(WithOutput(&buf)))
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
@@ -1450,7 +1450,7 @@ func TestNewFileLogger(t *testing.T) {
 		var p probe
 		dir := t.TempDir()
 		l, err := NewFileLogger(dir, "printeropt", minLevel,
-			WithPrinterOptions(loginjector.WithOutput(&p)),
+			WithPrinterOptions(WithOutput(&p)),
 		)
 		require.NoError(t, err)
 		_, err = l.WriteLog(minLevel, []byte("check printer"))
@@ -1574,7 +1574,7 @@ func TestNewFileLogger_WithPrinterMinLevel(t *testing.T) {
 		l, err := NewFileLogger(dir, "noprint2", 1,
 			WithoutPrinter(),
 			WithPrinterMinLevel(2),
-			WithPrinterOptions(loginjector.WithOutput(&buf)),
+			WithPrinterOptions(WithOutput(&buf)),
 		)
 		require.NoError(t, err)
 		_, err = l.WriteLog(2, []byte("printer min level"))

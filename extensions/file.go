@@ -196,7 +196,7 @@ func WithMaxFileAge(d time.Duration) FileLoggerOption {
 // removed, synchronously on the triggering write. It is OFF by default.
 //
 // RotatingFileHandler's WithStableCurrentName is deliberately NOT exposed here: NewFileLogger
-// wraps the handler in loginjector.TimestampedHandler, prefixing every line with a timestamp, which is at
+// wraps the handler in TimestampedHandler, prefixing every line with a timestamp, which is at
 // odds with a stable tail-able access-log format. Consumers wanting the fixed prefix.log live
 // path build a RotatingFileHandler directly instead.
 func WithFileCompression() FileLoggerOption {
@@ -237,9 +237,9 @@ func WithoutPrinter() FileLoggerOption {
 	return func(c *fileLoggerConfig) { c.printer = false }
 }
 
-// WithPrinterOptions forwards loginjector.PrintOption values to the loginjector.TimestampedPrintHandler
+// WithPrinterOptions forwards PrintOption values to the TimestampedPrintHandler
 // created by NewFileLogger. Has no effect when combined with WithoutPrinter.
-func WithPrinterOptions(opts ...loginjector.PrintOption) FileLoggerOption {
+func WithPrinterOptions(opts ...PrintOption) FileLoggerOption {
 	return func(c *fileLoggerConfig) { c.printerOpts = append(c.printerOpts, opts...) }
 }
 
@@ -263,12 +263,12 @@ func WithPrinterMinLevel(level loginjector.LogLevel) FileLoggerOption {
 
 // NewFileLogger builds a loginjector.Logger that writes to size-rotated files under folder and,
 // by default, mirrors every message at or above minLevel to a timestamped stdout
-// printer (loginjector.TimestampedPrintHandler). The printer fires as a handler (level >= minLevel),
+// printer (TimestampedPrintHandler). The printer fires as a handler (level >= minLevel),
 // not a hook, so its gating matches the file handler exactly.
 //
 // File lines are timestamped: the rotated file handler is wrapped in
-// loginjector.TimestampedHandler, so each on-disk line is "<timestamp> <message>" (layout
-// "2006/01/02 15:04:05"), not the bare message. The console printer and the file
+// TimestampedHandler, so each on-disk line is "<timestamp> <message>" (layout
+// sink.DefaultTimeLayout), not the bare message. The console printer and the file
 // handler are two separate sinks, each stamped exactly once.
 //
 // The standard library log package is NOT redirected unless WithStdLogRedirect is
@@ -588,10 +588,10 @@ func NewFileLogger(folder, prefix string, minLevel loginjector.LogLevel, opts ..
 	handlers := []io.Writer{
 		// stamp file lines sink-side (blessed emitters use Lmsgprefix only, so nothing
 		// else stamps the file); the RotatingFileHandler stays the underlying sink.
-		loginjector.TimestampedHandler(RotatingFileHandler(folder, prefix, rotatingOpts...)),
+		TimestampedHandler(RotatingFileHandler(folder, prefix, rotatingOpts...)),
 	}
 	if cfg.printer {
-		p := loginjector.TimestampedPrintHandler(cfg.printerOpts...)
+		p := TimestampedPrintHandler(cfg.printerOpts...)
 		if cfg.printerMinLevelSet {
 			p = loginjector.WithMinLevel(cfg.printerMinLevel, p)
 		}
@@ -631,7 +631,7 @@ type fileLoggerConfig struct {
 	compress           bool          // WithFileCompression; forwarded to RotatingFileHandler.
 	tempFallback       bool
 	printer            bool
-	printerOpts        []loginjector.PrintOption
+	printerOpts        []PrintOption
 	printerMinLevel    loginjector.LogLevel
 	printerMinLevelSet bool // disambiguates explicit-zero from unset.
 	stdLogRedirect     bool
