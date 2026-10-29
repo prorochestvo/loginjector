@@ -1473,10 +1473,10 @@ func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
 	const iterations = 250
 	const mixedLevels = 4
 
-	sink := &countingLevelWriter{counts: make(map[LogLevel]int)}
-	logger := NewLogger(logLevelDebug, sink)
+	counting := &countingLevelWriter{counts: make(map[LogLevel]int)}
+	logger := NewLogger(logLevelDebug, counting)
 	logger.Hook(
-		sink,
+		counting,
 		0,
 		1,
 		2,
@@ -1504,12 +1504,12 @@ func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
 		require.Equal(
 			t,
 			goroutines*iterations/mixedLevels*2,
-			sink.counts[LogLevel(level)],
+			counting.counts[LogLevel(level)],
 		)
 	}
 	require.Equal(
 		t,
 		goroutines*iterations,
-		sink.writeCalls,
+		counting.writeCalls,
 	)
 }

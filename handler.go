@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prorochestvo/loginjector/internal/sink"
 )
 
 func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Writer {
@@ -34,68 +36,66 @@ func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Wri
 		}
 		return strings.ReplaceAll(s, botToken, "***")
 	}
-	w := &writer{
-		h: func(msg []byte) (int, error) {
-			payload := &bytes.Buffer{}
-			parts := multipart.NewWriter(payload)
+	w := sink.NewFunc(func(msg []byte) (int, error) {
+		payload := &bytes.Buffer{}
+		parts := multipart.NewWriter(payload)
 
-			if filePart, err := parts.CreateFormFile("document", fileName); err != nil {
-				return 0, fmt.Errorf("could not create request form file, details: %w", err)
-			} else if _, err = filePart.Write(msg); err != nil {
-				return 0, fmt.Errorf("could not write file part to request, details: %w", err)
-			}
+		if filePart, err := parts.CreateFormFile("document", fileName); err != nil {
+			return 0, fmt.Errorf("could not create request form file, details: %w", err)
+		} else if _, err = filePart.Write(msg); err != nil {
+			return 0, fmt.Errorf("could not write file part to request, details: %w", err)
+		}
 
-			if err := parts.WriteField("chat_id", chatID); err != nil {
-				return 0, fmt.Errorf("could not write chat_id field to request: %w", err)
-			}
+		if err := parts.WriteField("chat_id", chatID); err != nil {
+			return 0, fmt.Errorf("could not write chat_id field to request: %w", err)
+		}
 
-			caption := strings.Join(labels, "\n")
-			caption = fmt.Sprintf("%s %s", time.Now().UTC().Format("2006-01-02 15:04:05"), caption)
-			caption = strings.TrimSpace(caption)
-			if err := parts.WriteField("caption", caption); err != nil {
-				return 0, fmt.Errorf("could not write caption field to request: %w", err)
-			}
+		caption := strings.Join(labels, "\n")
+		caption = fmt.Sprintf("%s %s", time.Now().UTC().Format("2006-01-02 15:04:05"), caption)
+		caption = strings.TrimSpace(caption)
+		if err := parts.WriteField("caption", caption); err != nil {
+			return 0, fmt.Errorf("could not write caption field to request: %w", err)
+		}
 
-			if err := parts.WriteField("parse_mode", "HTML"); err != nil {
-				return 0, fmt.Errorf("could not write parse_mode field to request: %w", err)
-			}
+		if err := parts.WriteField("parse_mode", "HTML"); err != nil {
+			return 0, fmt.Errorf("could not write parse_mode field to request: %w", err)
+		}
 
-			contentType := parts.FormDataContentType()
+		contentType := parts.FormDataContentType()
 
-			if err := parts.Close(); err != nil {
-				return 0, fmt.Errorf("could not close request: %w", err)
-			}
+		if err := parts.Close(); err != nil {
+			return 0, fmt.Errorf("could not close request: %w", err)
+		}
 
-			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, payload)
-			if err != nil {
-				return 0, fmt.Errorf("could not create HTTP request: %v", redactToken(err.Error()))
-			}
-			request.Header.Set("Content-Type", contentType)
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, payload)
+		if err != nil {
+			return 0, fmt.Errorf("could not create HTTP request: %v", redactToken(err.Error()))
+		}
+		request.Header.Set("Content-Type", contentType)
 
-			r, err := (&http.Client{Timeout: time.Second * 20}).Do(request)
-			if err != nil {
-				return 0, fmt.Errorf("could not send HTTP request: %v", redactToken(err.Error()))
-			}
-			// close error is discarded; logging here would re-enter the logger.
-			defer func() { _ = r.Body.Close() }()
+		r, err := (&http.Client{Timeout: time.Second * 20}).Do(request)
+		if err != nil {
+			return 0, fmt.Errorf("could not send HTTP request: %v", redactToken(err.Error()))
+		}
+		// close error is discarded; logging here would re-enter the logger.
+		defer func() { _ = r.Body.Close() }()
 
-			if r.StatusCode != http.StatusOK {
-				return 0, fmt.Errorf("could not to deliver message, status code: %v", r.StatusCode)
-			}
+		if r.StatusCode != http.StatusOK {
+			return 0, fmt.Errorf("could not to deliver message, status code: %v", r.StatusCode)
+		}
 
-			var response struct {
-				Ok bool `json:"ok"`
-			}
-			rawResponse := bytes.NewBufferString("")
-			err = json.NewDecoder(io.TeeReader(r.Body, rawResponse)).Decode(&response)
-			if err != nil || !response.Ok {
-				//nolint:errorlint // err may be nil when response.Ok is false; %w would render %!w(<nil>)
-				return 0, fmt.Errorf("could not decode response: %v\n%s", err, rawResponse.String())
-			}
+		var response struct {
+			Ok bool `json:"ok"`
+		}
+		rawResponse := bytes.NewBufferString("")
+		err = json.NewDecoder(io.TeeReader(r.Body, rawResponse)).Decode(&response)
+		if err != nil || !response.Ok {
+			//nolint:errorlint // err may be nil when response.Ok is false; %w would render %!w(<nil>)
+			return 0, fmt.Errorf("could not decode response: %v\n%s", err, rawResponse.String())
+		}
 
-			return len(msg), nil
-		},
-	}
+		return len(msg), nil
+	})
 	return w
 }
 
@@ -257,11 +257,9 @@ func RotatingFileHandler(folder, prefix string, opts ...RotatingFileOption) io.W
 
 	// reject a prefix that contains path separators — it would escape the folder.
 	if filepath.Base(prefix) != prefix {
-		return &writer{
-			h: func([]byte) (int, error) {
-				return 0, fmt.Errorf("loginjector: file name prefix %q must not contain path separators", prefix)
-			},
-		}
+		return sink.NewFunc(func([]byte) (int, error) {
+			return 0, fmt.Errorf("loginjector: file name prefix %q must not contain path separators", prefix)
+		})
 	}
 
 	index := 1
@@ -365,39 +363,37 @@ func RotatingFileHandler(folder, prefix string, opts ...RotatingFileOption) io.W
 		return err
 	}
 
-	w := &writer{
-		h: func(msg []byte) (int, error) {
-			// surface any construction-time stat/truncate error on the first Write,
-			// then clear it.
-			err := seedErr
-			seedErr = nil
+	w := sink.NewFunc(func(msg []byte) (int, error) {
+		// surface any construction-time stat/truncate error on the first Write,
+		// then clear it.
+		err := seedErr
+		seedErr = nil
 
-			written, complete, ioErr := appendLine(
-				filepath.Join(folder, fileName),
-				cfg.fileMode,
-				&buf,
-				msg,
-			)
-			if !complete && written == 0 {
-				// nothing reached the file (open or write failure): no size change, no rotation.
-				return 0, errors.Join(err, ioErr)
-			}
+		written, complete, ioErr := appendLine(
+			filepath.Join(folder, fileName),
+			cfg.fileMode,
+			&buf,
+			msg,
+		)
+		if !complete && written == 0 {
+			// nothing reached the file (open or write failure): no size change, no rotation.
+			return 0, errors.Join(err, ioErr)
+		}
 
-			fileSize += uint64(written)
+		fileSize += uint64(written)
 
-			var rotateErr error
-			if fileSize > uint64(cfg.maxFileSize) {
-				rotateErr = rotate()
-			}
+		var rotateErr error
+		if fileSize > uint64(cfg.maxFileSize) {
+			rotateErr = rotate()
+		}
 
-			// a short write still counts its bytes above so rotation accounting stays right,
-			// but reports 0; after a full write a close or rotation error keeps n == len(p).
-			if !complete {
-				return 0, errors.Join(err, ioErr, rotateErr)
-			}
-			return len(msg), errors.Join(err, ioErr, rotateErr)
-		},
-	}
+		// a short write still counts its bytes above so rotation accounting stays right,
+		// but reports 0; after a full write a close or rotation error keeps n == len(p).
+		if !complete {
+			return 0, errors.Join(err, ioErr, rotateErr)
+		}
+		return len(msg), errors.Join(err, ioErr, rotateErr)
+	})
 	return w
 }
 
@@ -422,42 +418,40 @@ func FileByFormatHandler(folder string, maxFilesInFolder int, fileNameGenerator 
 	}
 	lastFileName := ""
 	var buf []byte
-	w := &writer{
-		h: func(msg []byte) (int, error) {
-			generatedName := fileNameGenerator()
-			fileName := generatedName + "." + defaultFileExtension
-			if generatedName == "" || generatedName == "." || generatedName == ".." ||
-				filepath.Base(generatedName) != generatedName || !filepath.IsLocal(fileName) {
-				return 0, fmt.Errorf("loginjector: generated file name %q must be a plain file name", generatedName)
-			}
+	w := sink.NewFunc(func(msg []byte) (int, error) {
+		generatedName := fileNameGenerator()
+		fileName := generatedName + "." + defaultFileExtension
+		if generatedName == "" || generatedName == "." || generatedName == ".." ||
+			filepath.Base(generatedName) != generatedName || !filepath.IsLocal(fileName) {
+			return 0, fmt.Errorf("loginjector: generated file name %q must be a plain file name", generatedName)
+		}
 
-			written, complete, ioErr := appendLine(
+		written, complete, ioErr := appendLine(
+			filepath.Join(folder, fileName),
+			defaultFilePermissions,
+			&buf,
+			msg,
+		)
+		if !complete && written == 0 {
+			// nothing reached the file (open or write failure): nothing to prune for.
+			return 0, ioErr
+		}
+
+		var pruneErr error
+		if lastFileName != fileName {
+			lastFileName = fileName
+			pruneErr = verifyFiles(
+				folder,
+				maxFilesInFolder,
 				filepath.Join(folder, fileName),
-				defaultFilePermissions,
-				&buf,
-				msg,
 			)
-			if !complete && written == 0 {
-				// nothing reached the file (open or write failure): nothing to prune for.
-				return 0, ioErr
-			}
+		}
 
-			var pruneErr error
-			if lastFileName != fileName {
-				lastFileName = fileName
-				pruneErr = verifyFiles(
-					folder,
-					maxFilesInFolder,
-					filepath.Join(folder, fileName),
-				)
-			}
-
-			if !complete {
-				return 0, errors.Join(ioErr, pruneErr)
-			}
-			return len(msg), errors.Join(ioErr, pruneErr)
-		},
-	}
+		if !complete {
+			return 0, errors.Join(ioErr, pruneErr)
+		}
+		return len(msg), errors.Join(ioErr, pruneErr)
+	})
 	return w
 }
 
@@ -510,7 +504,7 @@ type printConfig struct {
 // instantiation with WithOutput support.
 func TimestampedHandler(inner io.Writer, opts ...PrintOption) io.Writer {
 	cfg := printConfig{
-		layout: "2006/01/02 15:04:05",
+		layout: sink.DefaultTimeLayout,
 		out:    inner,
 		clock:  time.Now,
 	}
@@ -519,7 +513,7 @@ func TimestampedHandler(inner io.Writer, opts ...PrintOption) io.Writer {
 	}
 	// the sink is the explicit inner argument; WithOutput must not redirect it.
 	cfg.out = inner
-	return newTimestampedWriter(cfg)
+	return sink.NewTimestamped(cfg.out, cfg.layout, cfg.clock)
 }
 
 // TimestampedPrintHandler prints each message to stdout with a leading timestamp,
@@ -536,63 +530,14 @@ func TimestampedHandler(inner io.Writer, opts ...PrintOption) io.Writer {
 // newline. An empty or whitespace-only input produces a single "<timestamp>\n" line.
 func TimestampedPrintHandler(opts ...PrintOption) io.Writer {
 	cfg := printConfig{
-		layout: "2006/01/02 15:04:05",
+		layout: sink.DefaultTimeLayout,
 		out:    os.Stdout,
 		clock:  time.Now,
 	}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return newTimestampedWriter(cfg)
-}
-
-// newTimestampedWriter builds the mutex-guarded writer shared by TimestampedHandler
-// and TimestampedPrintHandler: it renders each message with a leading timestamp and
-// continuation-line indent, then forwards the rendered bytes to cfg.out.
-func newTimestampedWriter(cfg printConfig) io.Writer {
-	// precompute the continuation indent once — the rendered width of a fixed-width
-	// layout is constant, so formatting a reference time gives the exact width.
-	const sep = " "
-	indent := strings.Repeat(" ", len(time.Time{}.Format(cfg.layout))+len(sep))
-
-	return &writer{
-		h: func(msg []byte) (int, error) {
-			ts := cfg.clock().Format(cfg.layout)
-
-			trimmed := bytes.TrimSpace(msg)
-
-			var b strings.Builder
-
-			// fast-path: single-line message (no '\n' in trimmed body).
-			if bytes.IndexByte(trimmed, '\n') < 0 {
-				b.WriteString(ts)
-				if len(trimmed) > 0 {
-					b.WriteString(sep)
-					b.Write(trimmed)
-				}
-				b.WriteByte('\n')
-			} else {
-				body := string(trimmed)
-				lines := strings.Split(body, "\n")
-				b.WriteString(ts)
-				if lines[0] != "" {
-					b.WriteString(sep)
-					b.WriteString(lines[0])
-				}
-				b.WriteByte('\n')
-				for _, ln := range lines[1:] {
-					b.WriteString(indent)
-					b.WriteString(ln)
-					b.WriteByte('\n')
-				}
-			}
-
-			if _, err := io.WriteString(cfg.out, b.String()); err != nil {
-				return 0, err
-			}
-			return len(msg), nil
-		},
-	}
+	return sink.NewTimestamped(cfg.out, cfg.layout, cfg.clock)
 }
 
 // PrintHandler writes each message to os.Stdout as a plain line, trimming
@@ -601,14 +546,12 @@ func newTimestampedWriter(cfg printConfig) io.Writer {
 // handlers) use TimestampedPrintHandler. The returned writer is mutex-guarded; the
 // logger never calls its Write concurrently.
 func PrintHandler() io.Writer {
-	w := &writer{
-		h: func(msg []byte) (int, error) {
-			if _, err := fmt.Fprintln(os.Stdout, string(bytes.TrimSpace(msg))); err != nil {
-				return 0, err
-			}
-			return len(msg), nil
-		},
-	}
+	w := sink.NewFunc(func(msg []byte) (int, error) {
+		if _, err := fmt.Fprintln(os.Stdout, string(bytes.TrimSpace(msg))); err != nil {
+			return 0, err
+		}
+		return len(msg), nil
+	})
 	return w
 }
 

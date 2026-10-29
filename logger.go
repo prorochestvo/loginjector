@@ -10,6 +10,9 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/prorochestvo/loginjector/internal/sink"
 )
 
 // LeveledHandler is an optional interface a handler may implement to declare a
@@ -59,15 +62,15 @@ type Logger struct {
 }
 
 // NewLogger creates a new logger with the given minimum log level and handlers.
-// If no handlers are provided, a default TimestampedPrintHandler (timestamped
-// stdout) is added.
+// If no handlers are provided, a default timestamped stdout handler is added.
 // Each handler is wrapped so the logger never calls its Write concurrently, which
 // makes logging safe from multiple goroutines even with non-thread-safe handlers.
 // Multiple registrations of the same pointer-type sink share one mutex.
 //
 // Covered: a pointer sink registered multiple times (directly, via WithMinLevel, or as a hook).
-// Not covered: a sink registered through a package factory wrapper (e.g., TimestampedHandler(buf)
-// wrapped alongside buf directly — the factory returns a *writer without original); value-type
+// Not covered: a sink registered through a package factory wrapper (e.g., a timestamped
+// writer around buf registered alongside buf directly — the factory returns an already-guarded
+// writer); value-type
 // sinks sharing state through a pointer; user wrapper types; or sharing across loggers.
 //
 // The logger retains every distinct pointer sink registered during its lifetime,
@@ -78,7 +81,7 @@ type Logger struct {
 // of itself.
 func NewLogger(minLevel LogLevel, handlers ...io.Writer) *Logger {
 	if len(handlers) == 0 {
-		handlers = []io.Writer{TimestampedPrintHandler()}
+		handlers = []io.Writer{sink.NewTimestamped(os.Stdout, sink.DefaultTimeLayout, time.Now)}
 	}
 
 	l := &Logger{
@@ -362,14 +365,18 @@ func (l *Logger) WriterAs(level LogLevel) io.Writer {
 }
 
 // ensureThreadSafe wraps w in a mutex-guarded writer so the logger never invokes a
-// given sink's Write concurrently. Writers produced by this package's handlers are
-// already guarded and are returned unchanged. Pointer-type sinks are deduplicated:
+// given sink's Write concurrently. Writers produced by this package's handlers and
+// *sink.Func are already guarded and are returned unchanged. Pointer-type sinks are
+// deduplicated:
 // the same pointer registered multiple times (directly, via WithMinLevel, or as a hook)
 // gets one shared mutex so writes serialize.
 //
 // This method must be called with l.m held (or before l is published, in NewLogger).
 func (l *Logger) ensureThreadSafe(w io.Writer) io.Writer {
 	if _, ok := w.(*writer); ok {
+		return w
+	}
+	if _, ok := w.(*sink.Func); ok {
 		return w
 	}
 
@@ -469,14 +476,14 @@ func writeSink(w io.Writer, level LogLevel, p []byte) (err error) {
 // Otherwise it returns the type of w.
 func sinkTypeName(w io.Writer) string {
 	for {
-		switch sink := w.(type) {
+		switch inner := w.(type) {
 		case *writer:
-			if sink.original == nil {
+			if inner.original == nil {
 				return fmt.Sprintf("%T", w)
 			}
-			w = sink.original
+			w = inner.original
 		case *leveledWriter:
-			w = sink.inner
+			w = inner.inner
 		default:
 			return fmt.Sprintf("%T", w)
 		}
@@ -493,8 +500,11 @@ func sinkIdentity(w io.Writer) (key io.Writer, ok bool) {
 		w = lw.inner
 	}
 
-	// a *writer is already self-serialised.
+	// A factory writer is already self-serialised.
 	if _, isWriter := w.(*writer); isWriter {
+		return nil, false
+	}
+	if _, isFunc := w.(*sink.Func); isFunc {
 		return nil, false
 	}
 
