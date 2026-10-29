@@ -161,7 +161,7 @@ func (l *Logger) Hook(writer io.Writer, level LogLevel, additional ...LogLevel) 
 // is never stamped twice. Use it to hand a *log.Logger to code that expects one —
 // for example a database driver's logger — without hand-wiring the flags:
 //
-//	dbLog := logger.StdLog(levels.Info, "sqlite ")
+//	dbLog := logger.StdLog(adapters.Info, "sqlite ")
 //
 // Each call returns a fresh *log.Logger over a fresh writer; the returned logger
 // routes through WriteLog, which serializes writes per sink.

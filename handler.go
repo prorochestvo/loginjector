@@ -1102,8 +1102,8 @@ func removeIfExists(path string) error {
 // high-severity messages to the console while sending everything to a file:
 //
 //	file    := loginjector.RotatingFileHandler("./logs", "app")
-//	console := loginjector.WithMinLevel(levels.Warning, loginjector.TimestampedPrintHandler())
-//	logger  := loginjector.NewLogger(levels.Info, file, console)
+//	console := loginjector.WithMinLevel(adapters.Warning, loginjector.TimestampedPrintHandler())
+//	logger  := loginjector.NewLogger(adapters.Info, file, console)
 //
 // The returned writer is itself thread-safe via Logger's existing ensureThreadSafe
 // wrapping at registration. Calling WithMinLevel on an already-leveled writer

@@ -43,7 +43,7 @@ func WithFields(fields map[string]any) Option {
 }
 
 // WithLevelName sets the name used to encode levels. The default is
-// levels.Name, which returns "unknown" outside levels 1 through 6; level_num
+// adapters.Name, which returns "unknown" outside levels 1 through 6; level_num
 // remains present so those events can still be filtered.
 func WithLevelName(fn func(loginjector.LogLevel) string) Option {
 	return func(cfg *config) error {

@@ -13,8 +13,8 @@
 //		return err
 //	}
 //	defer handler.Close()
-//	logger := loginjector.NewLogger(levels.Info, handler)
-//	logger.Printf(levels.Info, "service started")
+//	logger := loginjector.NewLogger(adapters.Info, handler)
+//	logger.Printf(adapters.Info, "service started")
 //
 // WithFields adds static event fields. Calling WithFields more than once
 // replaces the fields set by the earlier option.
