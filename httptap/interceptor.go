@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/prorochestvo/loginjector/internal/httpx"
 )
 
 // newInterceptorWithConfig creates a new interceptor that captures request and
@@ -53,7 +55,7 @@ func newInterceptorWithConfig(w http.ResponseWriter, r *http.Request, cfg payloa
 		}
 	}
 
-	wrapped := wrapWithOptionalInterfaces(i, w)
+	wrapped := httpx.WrapWithOptionalInterfaces(i, w)
 	return wrapped, r, i
 }
 
@@ -61,7 +63,7 @@ func newInterceptorWithConfig(w http.ResponseWriter, r *http.Request, cfg payloa
 // for logging. It embeds http.ResponseWriter to satisfy the interface; the Write
 // and WriteHeader methods are overridden to intercept the response. Optional
 // interfaces (http.Flusher, http.Hijacker, http.Pusher) are not implemented here
-// directly — wrapWithOptionalInterfaces returns a composite type that exposes
+// directly — WrapWithOptionalInterfaces returns a composite type that exposes
 // exactly the interfaces the underlying ResponseWriter has, so streaming and
 // websocket handlers are not silently broken by wrapping.
 //
@@ -85,6 +87,19 @@ type interceptor struct {
 	// body log; its truncated field indicates whether bytes were discarded.
 	requestCap *cappedWriter
 	http.ResponseWriter
+}
+
+// MarkHijacked satisfies httpx.Tap for *interceptor by setting the hijacked
+// flag that the post-handler flush guard in NewPayloadHandlerWithOptions reads.
+func (i *interceptor) MarkHijacked() { i.hijacked = true }
+
+// BeforeFlush marks the final status as committed: the real Flush sends the
+// recorded status, or an implicit 200 when none was written.
+func (i *interceptor) BeforeFlush() {
+	if i.hijacked {
+		return
+	}
+	i.wroteHeader = true
 }
 
 // Write overrides http.ResponseWriter.Write to capture the response body.
@@ -134,7 +149,7 @@ func (i *interceptor) Write(b []byte) (int, error) {
 // without recording. The first final status is recorded; later calls are
 // forwarded to the underlying writer (which reports the superfluous call).
 func (i *interceptor) WriteHeader(statusCode int) {
-	if isInformational(statusCode) {
+	if httpx.IsInformational(statusCode) {
 		// forward 1xx without recording
 		i.ResponseWriter.WriteHeader(statusCode)
 		return
@@ -151,12 +166,12 @@ func (i *interceptor) WriteHeader(statusCode int) {
 func (i *interceptor) bytes(cfg payloadConfig) []byte {
 	requestRawQuery := redactRawQuery(i.request.URL.RawQuery, cfg.redactQueryParams)
 	if requestRawQuery != "" {
-		requestRawQuery = "?" + escapeControl(requestRawQuery)
+		requestRawQuery = "?" + httpx.EscapeControl(requestRawQuery)
 	}
 	requestHead := fmt.Sprintf(
 		"%s %s%s\n",
 		i.request.Method,
-		escapeControl(i.request.URL.Path),
+		httpx.EscapeControl(i.request.URL.Path),
 		requestRawQuery,
 	)
 	requestHeadersAsString := strings.TrimSpace(headerToStringWithRedact(&i.request.Header, cfg.redactHeaders))

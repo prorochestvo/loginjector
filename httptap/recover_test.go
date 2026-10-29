@@ -8,13 +8,17 @@ import (
 	"sync"
 	"testing"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/internal/httpx"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // compile-time assertions for recoverResponseWriter.
 var _ http.ResponseWriter = (*recoverResponseWriter)(nil)
+var _ httpx.Tap = (*recoverResponseWriter)(nil)
 
 // newRecoverTestLogger creates a Logger backed by a thread-safe buffer for recover tests.
 func newRecoverTestLogger(t *testing.T) (*loginjector.Logger, *bytes.Buffer) {
@@ -220,7 +224,7 @@ func TestNewRecoverHandler(t *testing.T) {
 
 		h(fw, httptest.NewRequest(http.MethodGet, "/", nil))
 
-		// wrapWithOptionalInterfaces forwards Flush to the real underlying writer's Flusher.
+		// WrapWithOptionalInterfaces forwards Flush to the real underlying writer's Flusher.
 		// Calling Flush does NOT flush buffered body bytes — it delegates to the real Flusher.
 		require.True(t, flushed, "Flush must be forwarded to the real underlying Flusher")
 	})
@@ -757,4 +761,17 @@ func TestNewRecoverHandler(t *testing.T) {
 		require.Equal(t, "partial", fw.Body.String())
 		require.Contains(t, logBuf.String(), "panic:")
 	})
+}
+
+// lockedWriter is a thread-safe io.Writer used in the race subtest to prevent
+// data races on a shared writer from masking handler-level races.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  interface{ Write([]byte) (int, error) }
+}
+
+func (l *lockedWriter) Write(b []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(b)
 }

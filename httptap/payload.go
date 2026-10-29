@@ -8,7 +8,9 @@ import (
 	"sync"
 	"time"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/internal/httpx"
+
+	"github.com/prorochestvo/loginjector"
 )
 
 // payloadConfig holds all tunables for NewPayloadHandlerWithOptions.
@@ -123,7 +125,7 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 }
 
 // NewPayloadHandler is the debug variant: dumps full request and response
-// payloads; for the production access-log variant see NewAccessHandler.
+// payloads; for the production access-log variant see extensions.NewAccessHandler.
 //
 // It creates a new HTTP middleware handler that logs the full request and
 // response payloads (request line, headers, bodies, response status) to the
@@ -174,7 +176,7 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 			payloadSize := i.payload.Len()
 			responseSize := i.response.Len()
 			responseCode := i.code
-			escapedPath := escapeControl(r.URL.Path)
+			escapedPath := httpx.EscapeControl(r.URL.Path)
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)

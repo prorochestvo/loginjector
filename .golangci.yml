@@ -137,7 +137,7 @@ linters:
           # failOn: all turns a broken rules file into a hard error. Without it
           # a typo silently disables every custom rule.
           failOn: all
-          rules: gorules/rules.go
+          rules: '${base-path}/configs/linter/custom-rules.go'
 
     funcorder:
       # Type declaration first, its constructor right after it, methods below (R16).
