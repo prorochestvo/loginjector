@@ -606,6 +606,11 @@ func NewFileLogger(folder, prefix string, minLevel loginjector.LogLevel, opts ..
 	return l, nil
 }
 
+const defaultFilePermissions = 0o640
+const defaultFileExtension = "log"
+const gzipExtension = "gz"
+const tmpExtension = "tmp"
+
 // fileLoggerConfig holds the resolved configuration for NewFileLogger.
 type rotatingFileConfig struct {
 	maxFileSize uint32
@@ -822,11 +827,6 @@ func verifyRotationFiles(folder, prefix string, limit int) error {
 	}
 	return err
 }
-
-const defaultFilePermissions = 0o640
-const defaultFileExtension = "log"
-const gzipExtension = "gz"
-const tmpExtension = "tmp"
 
 // stableLiveName is the fixed live-file name under WithStableCurrentName: prefix.log.
 func stableLiveName(prefix string) string {

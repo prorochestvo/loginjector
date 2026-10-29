@@ -21,6 +21,46 @@ type Tap interface {
 	BeforeFlush()
 }
 
+// WrapWithOptionalInterfaces wraps base in the minimal composite type that
+// advertises exactly the optional interfaces that w implements. When w
+// implements none of them, base itself is returned directly — zero allocation on
+// the fast path.
+//
+// The combinatorial switch covers all eight cases for the three boolean flags
+// (Flusher, Hijacker, Pusher), following the httpsnoop pattern. Exotic
+// interfaces (io.ReaderFrom, http.CloseNotifier) are not bridged; they can be
+// added additively in a future change.
+func WrapWithOptionalInterfaces(base Tap, w http.ResponseWriter) http.ResponseWriter {
+	f, hasF := w.(http.Flusher)
+	h, hasH := w.(http.Hijacker)
+	p, hasP := w.(http.Pusher)
+
+	switch {
+	case hasF && hasH && hasP:
+		return &allThreeRW{Tap: base, flusher: f, hijacker: h, pusher: p}
+	case hasF && hasH:
+		return &flusherHijackerRW{Tap: base, flusher: f, hijacker: h}
+	case hasF && hasP:
+		return &flusherPusherRW{Tap: base, flusher: f, pusher: p}
+	case hasH && hasP:
+		return &hijackerPusherRW{Tap: base, hijacker: h, pusher: p}
+	case hasF:
+		return &flusherRW{Tap: base, flusher: f}
+	case hasH:
+		return &hijackerRW{Tap: base, hijacker: h}
+	case hasP:
+		return &pusherRW{Tap: base, pusher: p}
+	default:
+		return base
+	}
+}
+
+// IsInformational reports whether code is an HTTP informational status
+// (100-199) excluding 101 Switching Protocols, which is final in net/http.
+func IsInformational(code int) bool {
+	return code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
+}
+
 // flusherRW wraps a Tap base and additionally satisfies http.Flusher.
 type flusherRW struct {
 	Tap
@@ -126,44 +166,4 @@ func (v *allThreeRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 func (v *allThreeRW) Push(target string, opts *http.PushOptions) error {
 	return v.pusher.Push(target, opts)
-}
-
-// WrapWithOptionalInterfaces wraps base in the minimal composite type that
-// advertises exactly the optional interfaces that w implements. When w
-// implements none of them, base itself is returned directly — zero allocation on
-// the fast path.
-//
-// The combinatorial switch covers all eight cases for the three boolean flags
-// (Flusher, Hijacker, Pusher), following the httpsnoop pattern. Exotic
-// interfaces (io.ReaderFrom, http.CloseNotifier) are not bridged; they can be
-// added additively in a future change.
-func WrapWithOptionalInterfaces(base Tap, w http.ResponseWriter) http.ResponseWriter {
-	f, hasF := w.(http.Flusher)
-	h, hasH := w.(http.Hijacker)
-	p, hasP := w.(http.Pusher)
-
-	switch {
-	case hasF && hasH && hasP:
-		return &allThreeRW{Tap: base, flusher: f, hijacker: h, pusher: p}
-	case hasF && hasH:
-		return &flusherHijackerRW{Tap: base, flusher: f, hijacker: h}
-	case hasF && hasP:
-		return &flusherPusherRW{Tap: base, flusher: f, pusher: p}
-	case hasH && hasP:
-		return &hijackerPusherRW{Tap: base, hijacker: h, pusher: p}
-	case hasF:
-		return &flusherRW{Tap: base, flusher: f}
-	case hasH:
-		return &hijackerRW{Tap: base, hijacker: h}
-	case hasP:
-		return &pusherRW{Tap: base, pusher: p}
-	default:
-		return base
-	}
-}
-
-// IsInformational reports whether code is an HTTP informational status
-// (100-199) excluding 101 Switching Protocols, which is final in net/http.
-func IsInformational(code int) bool {
-	return code >= 100 && code <= 199 && code != http.StatusSwitchingProtocols
 }

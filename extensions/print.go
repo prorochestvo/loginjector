@@ -13,13 +13,6 @@ import (
 // PrintOption configures TimestampedPrintHandler.
 type PrintOption func(*printConfig)
 
-// printConfig holds the resolved configuration for TimestampedPrintHandler.
-type printConfig struct {
-	layout string
-	out    io.Writer
-	clock  func() time.Time
-}
-
 // WithTimeLayout overrides the timestamp layout used by TimestampedPrintHandler.
 // The default layout is 2006/01/02 15:04:05.
 func WithTimeLayout(layout string) PrintOption {
@@ -101,6 +94,13 @@ func PrintHandler() io.Writer {
 		}
 		return len(msg), nil
 	})
+}
+
+// printConfig holds the resolved configuration for TimestampedPrintHandler.
+type printConfig struct {
+	layout string
+	out    io.Writer
+	clock  func() time.Time
 }
 
 // withClock injects a fixed clock into timestamped print handlers for deterministic

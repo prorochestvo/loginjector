@@ -12,17 +12,6 @@ import (
 	"github.com/prorochestvo/loginjector/internal/httpx"
 )
 
-// accessResponseWriter is a lightweight http.ResponseWriter wrapper that records
-// only the status code. It does not buffer request or response bodies. It
-// satisfies httpx.Tap so it can be passed to
-// httpx.WrapWithOptionalInterfaces.
-type accessResponseWriter struct {
-	http.ResponseWriter
-	statusCode  int
-	wroteHeader bool
-	hijacked    bool
-}
-
 // NewAccessHandler returns an HTTP middleware that emits one line per request
 // in the form:
 //
@@ -83,6 +72,17 @@ func NewAccessHandler(out io.Writer, next http.HandlerFunc) http.HandlerFunc {
 		next(wrapped, r)
 		completed = true
 	}
+}
+
+// accessResponseWriter is a lightweight http.ResponseWriter wrapper that records
+// only the status code. It does not buffer request or response bodies. It
+// satisfies httpx.Tap so it can be passed to
+// httpx.WrapWithOptionalInterfaces.
+type accessResponseWriter struct {
+	http.ResponseWriter
+	statusCode  int
+	wroteHeader bool
+	hijacked    bool
 }
 
 // WriteHeader records the status code on the first final call only; informational
