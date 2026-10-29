@@ -51,9 +51,8 @@ your own levels.
 | Package | Purpose |
 |---|---|
 | `github.com/prorochestvo/loginjector` | Core fan-out `Logger`, hooks, `WithMinLevel`, and error types. |
-| `github.com/prorochestvo/loginjector/extensions` | Rotating and generated-name file sinks, print sinks, Telegram, access logging, file-logger bootstrap, and Axiom. |
+| `github.com/prorochestvo/loginjector/extensions` | Rotating and generated-name file sinks, print sinks, Telegram, HTTP payload capture and panic-recovery middleware, access logging, file-logger bootstrap, and Axiom. |
 | `github.com/prorochestvo/loginjector/adapters` | Optional severity constants and parsing, plus `io.Closer` helpers. |
-| `github.com/prorochestvo/loginjector/httptap` | HTTP payload capture and panic-recovery middleware. |
 
 ## Axiom
 
@@ -75,9 +74,9 @@ logger := loginjector.NewLogger(adapters.Info, ax)
 - `Logger.Panicf` and `Logger.Panic` panic; they do not call `os.Exit`.
 - `MinLevel` applies to any sink that implements `LeveledHandler`; `WithMinLevel` is one
   way to add that interface. Hooks match exact levels even below the logger's minimum.
-- `httptap` always redacts its default sensitive headers and credential query parameters;
+- `extensions.NewPayloadHandler` always redacts its default sensitive headers and credential query parameters;
   options can add names but cannot remove defaults.
-- `httptap.NewRecoverHandler` buffers responses until completion or flush. Streaming routes
+- `extensions.NewRecoverHandler` buffers responses until completion or flush. Streaming routes
   such as SSE and WebSockets should not use it.
 - Telegram delivery is a synchronous HTTP request. Axiom delivery is asynchronous and
   bounded, so close its handler during shutdown.

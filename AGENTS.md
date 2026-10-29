@@ -17,11 +17,10 @@ there is no binary, database, or server.
 
 | Path | Role |
 |---|---|
-| `doc.go`, `logger.go` | Root package docs and `Logger`: fan-out, hooks, `WithMinLevel`, `LeveledHandler`, `LevelWriter`, `WriterAs`, `StdLog`, `Panicf`/`Panic`; root-private `*writer` registration wrapper |
+| `logger.go` | Root `Logger`: fan-out, hooks, `WithMinLevel`, `LeveledHandler`, `LevelWriter`, `WriterAs`, `StdLog`, `Panicf`/`Panic`; root-private `*writer` registration wrapper |
 | `error.go` | Error types: `TraceError`, `StackTraceError`, `PublicError`, `HttpError` |
-| `extensions/` | Opt-in file and print sinks, `NewFileLogger`, Telegram, HTTP access logging, and Axiom facade |
+| `extensions/` | Opt-in file and print sinks, `NewFileLogger`, Telegram, HTTP payload capture and recover middleware, access logging, and Axiom facade |
 | `adapters/` | Optional level ladder and closer helpers |
-| `httptap/` | Opt-in HTTP payload and recover middleware; access logging lives in `extensions` |
 | `internal/sink/` | Guarded factory writer and shared timestamped renderer |
 | `internal/httpx/` | Shared response-writer composition and path escaping |
 | `internal/integrations/axiom/` | Axiom implementation behind the `extensions` facade |
@@ -52,14 +51,13 @@ there is no binary, database, or server.
   blocks its caller.
 - `LevelWriter` sinks get `WriteLevel`, not `Write`. The Axiom sink (`extensions.NewAxiomHandler`)
   is async, bounded, and needs `Close`/`Shutdown` before exit.
-- `httptap` redaction: the default header and query-parameter sets in
-  `httptap/redact.go` are always on and case-insensitive; options only add names. Do not
+- HTTP redaction: the default header and query-parameter sets in
+  `extensions/http_redact.go` are always on and case-insensitive; options only add names. Do not
   weaken them.
 - Runtime dependencies: standard library only (`testify` is test-only;
   `configs/linter/custom-rules.go` needs `go-ruleguard/dsl` and is never compiled);
   the module builds with `CGO_ENABLED=0`.
-- The root and `internal/{sink,httpx,synctest}` never import `adapters`, `extensions`, or
-  `httptap`; nothing outside tests imports `extensions`.
+- The root and `internal/{sink,httpx,synctest}` never import `adapters` or `extensions`; nothing outside tests imports `extensions`.
 - `WithMinLevel` stays in the root: `sinkIdentity` and `sinkTypeName` peel the concrete
   `*leveledWriter`.
 - Keep the `…ForRaceCondition` tests when touching the fan-out or the file handlers.

@@ -44,6 +44,19 @@ APIs move without root-package forwarders; update imports at each call site.
 | `loginjector.WithOutput` | `extensions.WithOutput` |
 | `loginjector.TelegramHandler` | `extensions.TelegramHandler` |
 | `httptap.NewAccessHandler` | `extensions.NewAccessHandler` |
+| `httptap.NewPayloadHandler` | `extensions.NewPayloadHandler` |
+| `httptap.NewPayloadHandlerWithOptions` | `extensions.NewPayloadHandlerWithOptions` |
+| `httptap.PayloadOption` | `extensions.PayloadOption` |
+| `httptap.WithMaxRequestBody` | `extensions.WithMaxRequestBody` |
+| `httptap.WithMaxResponseBody` | `extensions.WithMaxResponseBody` |
+| `httptap.WithoutBodies` | `extensions.WithoutBodies` |
+| `httptap.WithRedactHeaders` | `extensions.WithRedactHeaders` |
+| `httptap.WithSummaryWriter` | `extensions.WithSummaryWriter` |
+| `httptap.NewRecoverHandler` | `extensions.NewRecoverHandler` |
+| `httptap.RecoverOption` | `extensions.RecoverOption` |
+| `httptap.WithFallbackResponse` | `extensions.WithFallbackResponse` |
+| `httptap.WithFallbackContentType` | `extensions.WithFallbackContentType` |
+| `httptap.WithPublicMessage` | `extensions.WithPublicMessage` |
 | `loginjector.CloseOrPanic` | `adapters.CloseOrPanic` |
 | `loginjector.CloseOrLog` | `adapters.CloseOrLog` |
 | `loginjector.CloseOrLogError` | `adapters.CloseOrLogError` |
@@ -55,18 +68,22 @@ APIs move without root-package forwarders; update imports at each call site.
 `extensions.NewAccessHandler` also changes its nil-argument panic values from
 `httptap: out is nil` and `httptap: next is nil` to `loginjector: out is nil` and
 `loginjector: next is nil`.
+`extensions.NewPayloadHandler`, `extensions.NewPayloadHandlerWithOptions`, and
+`extensions.NewRecoverHandler` also change their nil-argument panic values from
+`httptap: logger is nil`, `httptap: nextFunc is nil`, and `httptap: next is nil` to
+`loginjector: logger is nil`, `loginjector: nextFunc is nil`, and `loginjector: next is nil`.
 
 The `github.com/prorochestvo/loginjector/levels` import path is now
-`github.com/prorochestvo/loginjector/adapters`. File, print, Telegram, and access factories now
-live under `github.com/prorochestvo/loginjector/extensions`.
+`github.com/prorochestvo/loginjector/adapters`. File, print, Telegram, access, payload,
+and recover middleware factories now live under `github.com/prorochestvo/loginjector/extensions`.
 
 ### Added
 
 - `LevelWriter` for sinks that need the message severity, and the opt-in Axiom sink, exposed
   as `extensions.NewAxiomHandler`, for asynchronous Axiom ingest. It accepts
   `extensions.AxiomToken` and `extensions.AxiomDataset` values.
-- `httptap.WithRedactQueryParams(names...)` — additive-only option for
-  `httptap.NewPayloadHandlerWithOptions` to redact query-parameter values. The default set
+- `extensions.WithRedactQueryParams(names...)` — additive-only option for
+  `extensions.NewPayloadHandlerWithOptions` to redact query-parameter values. The default set
   (`access_token`, `refresh_token`, `id_token`, `client_secret`, `api_key`, `apikey`,
   `password`) is always applied and cannot be removed; additional parameter names are added
   (case-insensitive).
@@ -82,9 +99,9 @@ live under `github.com/prorochestvo/loginjector/extensions`.
   `WriteHeader(500)`), not the last attempted one.
 - `extensions.NewAccessHandler` logs `[200]` for handlers that return without writing; `[000]`
   remains for hijacked or panicked requests.
-- `httptap.NewRecoverHandler` sends 1xx responses (for example 103 Early Hints) immediately
+- `extensions.NewRecoverHandler` sends 1xx responses (for example 103 Early Hints) immediately
   instead of treating them as the final status.
-- `httptap.NewRecoverHandler`: `Flush` commits the buffered response; a panic after a commit
+- `extensions.NewRecoverHandler`: `Flush` commits the buffered response; a panic after a commit
   is logged and re-panicked as `http.ErrAbortHandler`, so an outer recover middleware now sees
   `http.ErrAbortHandler` after a `Flush` instead of a 500 being written.
 - `Logger.WriteLog` releases the logger lock before writing to sinks; a call already in
@@ -132,12 +149,12 @@ live under `github.com/prorochestvo/loginjector/extensions`.
 
 ### Fixed
 
-- `httptap.NewRecoverHandler` sent `WriteHeader(404)` + `Flush` as status 200.
-- `httptap.NewRecoverHandler` dropped header deletions on commit.
-- `httptap.NewRecoverHandler` did not freeze headers at `WriteHeader`.
-- `extensions.NewAccessHandler` and `httptap.NewPayloadHandlerWithOptions` treated 1xx
+- `extensions.NewRecoverHandler` sent `WriteHeader(404)` + `Flush` as status 200.
+- `extensions.NewRecoverHandler` dropped header deletions on commit.
+- `extensions.NewRecoverHandler` did not freeze headers at `WriteHeader`.
+- `extensions.NewAccessHandler` and `extensions.NewPayloadHandlerWithOptions` treated 1xx
   informational responses as final status.
-- `httptap.NewRecoverHandler` sent a declared trailer (`Trailer: X-Checksum`, value set after
+- `extensions.NewRecoverHandler` sent a declared trailer (`Trailer: X-Checksum`, value set after
   `Write`) as a response header as well as a trailer; it now goes out only as a trailer.
 - A hook or handler calling `Hook`, `Unhook`, or `SetMinLevel` from its `Write` deadlocked; a
   pending `Hook`/`Unhook`/`SetMinLevel` blocked all logging until the slowest sink returned.

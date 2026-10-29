@@ -49,7 +49,8 @@ func WithoutBodies() PayloadOption {
 }
 
 // WithRedactHeaders adds header names to the redaction set used when logging
-// request and response headers. The default set (Authorization,
+// request and response headers. It adds names and cannot remove the built-in set.
+// The default set (Authorization,
 // Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key, X-Auth-Token) is always
 // present and cannot be removed; this option is additive only. Matching is
 // case-insensitive.
@@ -62,7 +63,8 @@ func WithRedactHeaders(names ...string) PayloadOption {
 }
 
 // WithRedactQueryParams adds query parameter names to the redaction set used
-// when logging request URIs. The default set (access_token, refresh_token,
+// when logging request URIs. It adds names and cannot remove the built-in set.
+// The default set (access_token, refresh_token,
 // id_token, client_secret, api_key, apikey, password) is always present and
 // cannot be removed; this option is additive only. Matching is case-insensitive.
 func WithRedactQueryParams(names ...string) PayloadOption {
@@ -90,6 +92,8 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 // Cookie, Set-Cookie, X-Api-Key, and X-Auth-Token headers are always redacted.
 // Query parameters access_token, refresh_token, id_token, client_secret, api_key,
 // apikey, and password are logged with values redacted as [REDACTED].
+// The default sensitive header names and credential query parameters are always
+// redacted case-insensitively; options only add names.
 // This function is equivalent to calling NewPayloadHandlerWithOptions with no
 // options.
 //
@@ -103,6 +107,8 @@ func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, n
 // header and query redaction, and the summary destination. Calling it with no
 // options produces byte-identical logger output and the same stdout summary as
 // NewPayloadHandler.
+// The default sensitive header names and credential query parameters are always
+// redacted case-insensitively; options only add names.
 //
 // A nil logger or nextFunc is a programmer error and panics.
 //
