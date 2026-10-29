@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/prorochestvo/loginjector/internal/sink"
@@ -1035,80 +1034,6 @@ func removeIfExists(path string) error {
 		return err
 	}
 	return nil
-}
-
-// WithMinLevel wraps handler so that Logger treats it as a LeveledHandler with
-// the given minimum level. The returned writer forwards Write calls to handler
-// unchanged; the only added behaviour is the MinLevel() method that Logger.WriteLog
-// reads via interface assertion. Use this to give one handler a threshold
-// distinct from the parent Logger's minimumLogLevel — for example, to send only
-// high-severity messages to the console while sending everything to a file:
-//
-//	file    := loginjector.RotatingFileHandler("./logs", "app")
-//	console := loginjector.WithMinLevel(adapters.Warning, loginjector.TimestampedPrintHandler())
-//	logger  := loginjector.NewLogger(adapters.Info, file, console)
-//
-// The returned writer is itself thread-safe via Logger's existing ensureThreadSafe
-// wrapping at registration. Calling WithMinLevel on an already-leveled writer
-// replaces the inner MinLevel().
-func WithMinLevel(level LogLevel, handler io.Writer) io.Writer {
-	return &leveledWriter{inner: handler, level: level}
-}
-
-// leveledWriter is the concrete LeveledHandler implementation behind WithMinLevel.
-type leveledWriter struct {
-	inner io.Writer
-	level LogLevel
-}
-
-func (lw *leveledWriter) Write(p []byte) (int, error) { return lw.inner.Write(p) }
-
-// WriteLevel forwards p with its level to the inner writer when it is a
-// LevelWriter, and to its Write otherwise.
-func (lw *leveledWriter) WriteLevel(level LogLevel, p []byte) (int, error) {
-	if inner, ok := lw.inner.(LevelWriter); ok {
-		return inner.WriteLevel(level, p)
-	}
-	return lw.inner.Write(p)
-}
-
-func (lw *leveledWriter) MinLevel() LogLevel { return lw.level }
-
-var _ LeveledHandler = (*leveledWriter)(nil)
-
-// writer is a thread-safe writer.
-type writer struct {
-	m        sync.Mutex
-	shared   *sync.Mutex // when set, the mutex to use instead of &w.m (shared per-identity registry)
-	h        func(msg []byte) (n int, err error)
-	original io.Writer // the unwrapped sink; set by ensureThreadSafe for unwrapLeveled.
-}
-
-// Write writes the message to the handler.
-func (w *writer) Write(p []byte) (n int, err error) {
-	mu := w.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-	return w.h(p)
-}
-
-// WriteLevel writes p to the handler with the given level while holding its sink mutex.
-func (w *writer) WriteLevel(level LogLevel, p []byte) (n int, err error) {
-	mu := w.mutex()
-	mu.Lock()
-	defer mu.Unlock()
-	if original, ok := w.original.(LevelWriter); ok {
-		return original.WriteLevel(level, p)
-	}
-	return w.h(p)
-}
-
-// mutex returns the shared per-sink mutex when one is set, else the writer's own.
-func (w *writer) mutex() *sync.Mutex {
-	if w.shared != nil {
-		return w.shared
-	}
-	return &w.m
 }
 
 // listRotation lists non-directory entries whose names end with one of suffixes. It
