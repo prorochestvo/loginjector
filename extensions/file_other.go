@@ -1,6 +1,6 @@
 //go:build !unix
 
-package loginjector
+package extensions
 
 import "os"
 

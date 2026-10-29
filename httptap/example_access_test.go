@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	loginjector "github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/extensions"
 )
 
 // ExampleNewAccessHandler shows the canonical production access-log sink: a
@@ -15,11 +15,11 @@ import (
 func ExampleNewAccessHandler() {
 	// access.log stays at a fixed path so `tail -F access.log` follows it across rotations;
 	// rotated backups are indexed, gzipped, and pruned once older than two weeks.
-	out := loginjector.RotatingFileHandler(
+	out := extensions.RotatingFileHandler(
 		"./logs", "access",
-		loginjector.WithStableCurrentName(),
-		loginjector.WithMaxAge(14*24*time.Hour),
-		loginjector.WithCompress(),
+		extensions.WithStableCurrentName(),
+		extensions.WithMaxAge(14*24*time.Hour),
+		extensions.WithCompress(),
 	)
 
 	app := func(w http.ResponseWriter, _ *http.Request) {
