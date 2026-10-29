@@ -71,8 +71,8 @@ type Logger struct {
 // Covered: a pointer sink registered multiple times (directly, via WithMinLevel, or as a hook).
 // Not covered: a sink registered through a package factory wrapper (e.g., a timestamped
 // writer around buf registered alongside buf directly — the factory returns an already-guarded
-// writer); value-type
-// sinks sharing state through a pointer; user wrapper types; or sharing across loggers.
+// writer); value-type sinks sharing state through a pointer; user wrapper types; or sharing
+// across loggers.
 //
 // The logger retains every distinct pointer sink registered during its lifetime,
 // including after Unhook, and everything reachable from it; per-request sinks on a
@@ -367,8 +367,8 @@ func (l *Logger) WriterAs(level LogLevel) io.Writer {
 }
 
 // ensureThreadSafe wraps w in a mutex-guarded writer so the logger never invokes a
-// given sink's Write concurrently. Writers built by this package's factories are already
-// guarded and are returned unchanged. Pointer-type sinks are deduplicated:
+// given sink's Write concurrently. Writers built by the extensions package's sink factories
+// are already guarded and are returned unchanged. Pointer-type sinks are deduplicated:
 // the same pointer registered multiple times (directly, via WithMinLevel, or as a hook)
 // gets one shared mutex so writes serialize.
 //
@@ -565,7 +565,9 @@ func sinkTypeName(w io.Writer) string {
 }
 
 // sinkIdentity peels *leveledWriter layers and returns the identity key for deduplication.
-// If the innermost writer is a *writer, it returns (nil, false) — already self-serialised.
+// If the innermost writer is a *writer, it returns (nil, false) — the root's registration
+// wrapper carries the original sink and its shared mutex.
+// A sink built by an extensions factory is already self-serialised and also returns (nil, false).
 // If it's nil or not a pointer type, it returns (nil, false) — not deduplicable.
 // Otherwise it returns (inner, true) where inner is a pointer sink.
 // Caller must not mutate the returned key.
@@ -574,7 +576,7 @@ func sinkIdentity(w io.Writer) (key io.Writer, ok bool) {
 		w = lw.inner
 	}
 
-	// A factory writer is already self-serialised.
+	// a *writer is the root's registration wrapper, carrying the original sink and shared mutex.
 	if _, isWriter := w.(*writer); isWriter {
 		return nil, false
 	}

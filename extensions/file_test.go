@@ -1757,7 +1757,7 @@ func TestNewFileLogger_WithPrinterMinLevel(t *testing.T) {
 
 	t.Run("printer_min_level_with_WithoutPrinter", func(t *testing.T) {
 		t.Parallel()
-		// WithoutPrinter wins over WithPrinterMinLevel when using NewFileLogger.
+		// WithoutPrinter wins over the level gate, so the printer output stays empty.
 		dir := t.TempDir()
 		var buf bytes.Buffer
 		l, err := NewFileLogger(dir, "noprint2", 1,

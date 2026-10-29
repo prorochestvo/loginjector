@@ -1,5 +1,5 @@
-// access.go holds the lightweight production access-log handler; see payload.go
-// for the debug full-dump variant.
+// http.go holds the lightweight production access-log handler; see
+// httptap/payload.go for the debug full-dump variant.
 
 package extensions
 
@@ -19,7 +19,7 @@ import (
 //
 // It is the production access-log variant: status, method, path, duration; no
 // header dumping, no body capture, no goroutine fan-out, no *Logger coupling.
-// For the debug full-dump variant see NewPayloadHandler.
+// For the debug full-dump variant see httptap.NewPayloadHandler.
 //
 // out is the destination for log lines. The handler writes synchronously; out
 // MUST be safe for concurrent Write calls (an *os.File or os.Stdout qualifies;
@@ -114,7 +114,7 @@ func (a *accessResponseWriter) Write(b []byte) (int, error) {
 }
 
 // MarkHijacked satisfies httpx.Tap; it records that the
-// connection has been hijacked so the field is available for future use.
+// connection has been hijacked.
 func (a *accessResponseWriter) MarkHijacked() { a.hijacked = true }
 
 // BeforeFlush records the implicit 200 that the real Flush commits when no

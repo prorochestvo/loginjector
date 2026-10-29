@@ -1,6 +1,6 @@
 // Package synctest provides a mutex-guarded bytes.Buffer for the loginjector test
-// suites. It is module-internal test scaffolding: both the root package's and the
-// httptap package's test files may import it to obtain a buffer that is safe under
+// suites. It is module-internal test scaffolding: the root, extensions, and httptap
+// test files may import it to obtain a buffer that is safe under
 // concurrent Write/Read from many goroutines, without that type appearing in the
 // shipped public API.
 package synctest

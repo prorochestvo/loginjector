@@ -46,7 +46,7 @@ your own levels.
 
 | Package | Purpose |
 |---|---|
-| `github.com/prorochestvo/loginjector` | Fan-out `Logger`, hooks, `WithMinLevel`, standard-library adapters, and error types. |
+| `github.com/prorochestvo/loginjector` | Core fan-out `Logger`, hooks, `WithMinLevel`, and error types. |
 | `github.com/prorochestvo/loginjector/extensions` | Rotating and generated-name file sinks, print sinks, Telegram, access logging, file-logger bootstrap, and Axiom. |
 | `github.com/prorochestvo/loginjector/adapters` | Optional severity constants and parsing, plus `io.Closer` helpers. |
 | `github.com/prorochestvo/loginjector/httptap` | HTTP payload capture and panic-recovery middleware. |
