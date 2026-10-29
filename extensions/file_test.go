@@ -1446,7 +1446,10 @@ func TestNewFileLogger(t *testing.T) {
 		t.Parallel()
 
 		dir := t.TempDir()
-		l, err := NewFileLogger(dir, "rot", minLevel,
+		l, err := NewFileLogger(
+			dir,
+			"rot",
+			minLevel,
 			WithoutPrinter(),
 			WithMaxFileCapacity(10),
 			WithMaxFilesInFolder(5),
@@ -1587,7 +1590,10 @@ func TestNewFileLogger(t *testing.T) {
 		dir := t.TempDir()
 		const redirectLevel loginjector.LogLevel = 2
 
-		_, err := NewFileLogger(dir, "redirect", minLevel,
+		_, err := NewFileLogger(
+			dir,
+			"redirect",
+			minLevel,
 			WithStdLogRedirect(redirectLevel),
 			WithPrinterOptions(WithOutput(&buf)),
 		)
@@ -1609,7 +1615,13 @@ func TestNewFileLogger(t *testing.T) {
 
 		dir := t.TempDir()
 		var buf bytes.Buffer
-		l, err := NewFileLogger(dir, "noprint", minLevel, WithoutPrinter(), WithPrinterOptions(WithOutput(&buf)))
+		l, err := NewFileLogger(
+			dir,
+			"noprint",
+			minLevel,
+			WithoutPrinter(),
+			WithPrinterOptions(WithOutput(&buf)),
+		)
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
@@ -1624,7 +1636,12 @@ func TestNewFileLogger(t *testing.T) {
 
 		dir := t.TempDir()
 		var buf bytes.Buffer
-		l, err := NewFileLogger(dir, "withprint", minLevel, WithPrinterOptions(WithOutput(&buf)))
+		l, err := NewFileLogger(
+			dir,
+			"withprint",
+			minLevel,
+			WithPrinterOptions(WithOutput(&buf)),
+		)
 		require.NoError(t, err)
 		require.NotNil(t, l)
 
@@ -1638,7 +1655,10 @@ func TestNewFileLogger(t *testing.T) {
 
 		var p probe
 		dir := t.TempDir()
-		l, err := NewFileLogger(dir, "printeropt", minLevel,
+		l, err := NewFileLogger(
+			dir,
+			"printeropt",
+			minLevel,
 			WithPrinterOptions(WithOutput(&p)),
 		)
 		require.NoError(t, err)
@@ -1760,7 +1780,10 @@ func TestNewFileLogger_WithPrinterMinLevel(t *testing.T) {
 		// WithoutPrinter wins over the level gate, so the printer output stays empty.
 		dir := t.TempDir()
 		var buf bytes.Buffer
-		l, err := NewFileLogger(dir, "noprint2", 1,
+		l, err := NewFileLogger(
+			dir,
+			"noprint2",
+			1,
 			WithoutPrinter(),
 			WithPrinterMinLevel(2),
 			WithPrinterOptions(WithOutput(&buf)),
@@ -1802,8 +1825,15 @@ func TestNewFileLogger_RotationOptions(t *testing.T) {
 		t.Parallel()
 
 		dir := t.TempDir()
-		l, err := NewFileLogger(dir, "app", minLevel,
-			WithoutPrinter(), WithMaxFileCapacity(20), WithMaxFilesInFolder(50), WithFileCompression())
+		l, err := NewFileLogger(
+			dir,
+			"app",
+			minLevel,
+			WithoutPrinter(),
+			WithMaxFileCapacity(20),
+			WithMaxFilesInFolder(50),
+			WithFileCompression(),
+		)
 		require.NoError(t, err)
 
 		for i := range 4 {
@@ -1823,8 +1853,15 @@ func TestNewFileLogger_RotationOptions(t *testing.T) {
 		t.Parallel()
 
 		dir := t.TempDir()
-		l, err := NewFileLogger(dir, "app", minLevel,
-			WithoutPrinter(), WithMaxFileCapacity(20), WithMaxFilesInFolder(100), WithMaxFileAge(time.Hour))
+		l, err := NewFileLogger(
+			dir,
+			"app",
+			minLevel,
+			WithoutPrinter(),
+			WithMaxFileCapacity(20),
+			WithMaxFilesInFolder(100),
+			WithMaxFileAge(time.Hour),
+		)
 		require.NoError(t, err)
 
 		// each stamped line exceeds 20 bytes, so every write rotates: three backups form.

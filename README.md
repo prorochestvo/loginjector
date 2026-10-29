@@ -33,8 +33,12 @@ func main() {
 	std := logger.StdLog(adapters.Info, "app ")
 	std.Printf("service started")
 
-	logger.Hook(extensions.TelegramHandler("bot-token", "chat-id", "errors.log"),
-		adapters.Error, adapters.Severe, adapters.Critical)
+	logger.Hook(
+		extensions.TelegramHandler("bot-token", "chat-id", "errors.log"),
+		adapters.Error,
+		adapters.Severe,
+		adapters.Critical,
+	)
 }
 ```
 

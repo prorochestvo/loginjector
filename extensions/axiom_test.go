@@ -111,7 +111,12 @@ func TestNewAxiomHandler(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 		defer server.Close()
-		ax := newTestAxiomHandler(t, server, WithAxiomCompression(false), WithAxiomFields(map[string]any{"service": "api"}))
+		ax := newTestAxiomHandler(
+			t,
+			server,
+			WithAxiomCompression(false),
+			WithAxiomFields(map[string]any{"service": "api"}),
+		)
 		_, err := ax.Write([]byte("event"))
 		require.NoError(t, err)
 		require.NoError(t, ax.Flush(context.Background()))
@@ -164,7 +169,13 @@ func TestAxiomHandler_Format(t *testing.T) {
 
 func newTestAxiomHandler(t *testing.T, server *httptest.Server, opts ...AxiomOption) *AxiomHandler {
 	t.Helper()
-	opts = append(opts, WithAxiomDomain(strings.TrimPrefix(server.URL, "https://")), WithAxiomHTTPClient(server.Client()), WithAxiomBatchSize(1), WithAxiomMaxRetries(0))
+	opts = append(
+		opts,
+		WithAxiomDomain(strings.TrimPrefix(server.URL, "https://")),
+		WithAxiomHTTPClient(server.Client()),
+		WithAxiomBatchSize(1),
+		WithAxiomMaxRetries(0),
+	)
 	ax, err := NewAxiomHandler("xaat-secret", "logs", opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ax.Close() })

@@ -15,7 +15,10 @@ func NewTimestamped(out io.Writer, layout string, clock func() time.Time) *Func 
 	// precompute the continuation indent once — the rendered width of a fixed-width
 	// layout is constant, so formatting a reference time gives the exact width.
 	const sep = " "
-	indent := strings.Repeat(" ", len(time.Time{}.Format(layout))+len(sep))
+	indent := strings.Repeat(
+		" ",
+		len(time.Time{}.Format(layout))+len(sep),
+	)
 
 	return NewFunc(func(msg []byte) (int, error) {
 		ts := clock().Format(layout)

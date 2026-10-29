@@ -19,11 +19,12 @@ import (
 func ExampleNewAccessHandler() {
 	// access.log stays at a fixed path so `tail -F access.log` follows it across rotations;
 	// rotated backups are indexed, gzipped, and pruned once older than two weeks.
+	maxAge := 14 * 24 * time.Hour
 	out := extensions.RotatingFileHandler(
 		"./logs",
 		"access",
 		extensions.WithStableCurrentName(),
-		extensions.WithMaxAge(14*24*time.Hour),
+		extensions.WithMaxAge(maxAge),
 		extensions.WithCompress(),
 	)
 
