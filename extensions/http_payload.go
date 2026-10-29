@@ -84,7 +84,7 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 }
 
 // NewPayloadHandler is the debug variant: dumps full request and response
-// payloads; for the production access-log variant see extensions.NewAccessHandler.
+// payloads; for the production access-log variant see [NewAccessHandler].
 //
 // It creates a new HTTP middleware handler that logs the full request and
 // response payloads (request line, headers, bodies, response status) to the

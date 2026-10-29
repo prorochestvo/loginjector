@@ -57,7 +57,8 @@ there is no binary, database, or server.
 - Runtime dependencies: standard library only (`testify` is test-only;
   `configs/linter/custom-rules.go` needs `go-ruleguard/dsl` and is never compiled);
   the module builds with `CGO_ENABLED=0`.
-- The root and `internal/{sink,httpx,synctest}` never import `adapters` or `extensions`; nothing outside tests imports `extensions`.
+- The root and `internal/{sink,httpx,synctest}` never import `adapters` or `extensions`; nothing
+  outside tests imports `extensions`.
 - `WithMinLevel` stays in the root: `sinkIdentity` and `sinkTypeName` peel the concrete
   `*leveledWriter`.
 - Keep the `…ForRaceCondition` tests when touching the fan-out or the file handlers.

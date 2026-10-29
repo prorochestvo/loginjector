@@ -68,14 +68,17 @@ APIs move without root-package forwarders; update imports at each call site.
 `extensions.NewAccessHandler` also changes its nil-argument panic values from
 `httptap: out is nil` and `httptap: next is nil` to `loginjector: out is nil` and
 `loginjector: next is nil`.
+
 `extensions.NewPayloadHandler`, `extensions.NewPayloadHandlerWithOptions`, and
 `extensions.NewRecoverHandler` also change their nil-argument panic values from
 `httptap: logger is nil`, `httptap: nextFunc is nil`, and `httptap: next is nil` to
 `loginjector: logger is nil`, `loginjector: nextFunc is nil`, and `loginjector: next is nil`.
 
 The `github.com/prorochestvo/loginjector/levels` import path is now
-`github.com/prorochestvo/loginjector/adapters`. File, print, Telegram, access, payload,
-and recover middleware factories now live under `github.com/prorochestvo/loginjector/extensions`.
+`github.com/prorochestvo/loginjector/adapters`. The `github.com/prorochestvo/loginjector/httptap`
+import path is removed; its middleware, options and option types are in
+`github.com/prorochestvo/loginjector/extensions`, together with the file, print, Telegram, and
+access factories.
 
 ### Added
 
