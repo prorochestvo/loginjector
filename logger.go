@@ -10,6 +10,9 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/prorochestvo/loginjector/internal/sink"
 )
 
 // LeveledHandler is an optional interface a handler may implement to declare a
@@ -24,6 +27,15 @@ import (
 type LeveledHandler interface {
 	io.Writer
 	MinLevel() LogLevel
+}
+
+// LevelWriter is an optional interface a handler or hook may implement to receive
+// the severity of each message. Implementations must not retain p after returning.
+// When a sink implements LevelWriter, Logger.WriteLog calls WriteLevel instead of
+// Write.
+type LevelWriter interface {
+	io.Writer
+	WriteLevel(level LogLevel, p []byte) (n int, err error)
 }
 
 // Logger is describing the logger structure and its methods.
@@ -50,16 +62,17 @@ type Logger struct {
 }
 
 // NewLogger creates a new logger with the given minimum log level and handlers.
-// If no handlers are provided, a default TimestampedPrintHandler (timestamped
-// stdout) is added.
+// If no handlers are provided, a default timestamped stdout handler is added,
+// equivalent to extensions.TimestampedPrintHandler.
 // Each handler is wrapped so the logger never calls its Write concurrently, which
 // makes logging safe from multiple goroutines even with non-thread-safe handlers.
 // Multiple registrations of the same pointer-type sink share one mutex.
 //
 // Covered: a pointer sink registered multiple times (directly, via WithMinLevel, or as a hook).
-// Not covered: a sink registered through a package factory wrapper (e.g., TimestampedHandler(buf)
-// wrapped alongside buf directly — the factory returns a *writer without original); value-type
-// sinks sharing state through a pointer; user wrapper types; or sharing across loggers.
+// Not covered: a sink registered through a package factory wrapper (e.g., a timestamped
+// writer around buf registered alongside buf directly — the factory returns an already-guarded
+// writer); value-type sinks sharing state through a pointer; user wrapper types; or sharing
+// across loggers.
 //
 // The logger retains every distinct pointer sink registered during its lifetime,
 // including after Unhook, and everything reachable from it; per-request sinks on a
@@ -69,7 +82,7 @@ type Logger struct {
 // of itself.
 func NewLogger(minLevel LogLevel, handlers ...io.Writer) *Logger {
 	if len(handlers) == 0 {
-		handlers = []io.Writer{TimestampedPrintHandler()}
+		handlers = []io.Writer{sink.NewTimestamped(os.Stdout, sink.DefaultTimeLayout, time.Now)}
 	}
 
 	l := &Logger{
@@ -148,11 +161,12 @@ func (l *Logger) Hook(writer io.Writer, level LogLevel, additional ...LogLevel) 
 // StdLog returns a standard-library *log.Logger that writes through this logger at
 // the given level, with the given prefix. It is configured with log.Lmsgprefix and
 // no date/time flags: the emitter contributes only the prefix, and any timestamp is
-// added by the sink (e.g. TimestampedPrintHandler or TimestampedHandler), so a line
-// is never stamped twice. Use it to hand a *log.Logger to code that expects one —
+// added by the sink (e.g. extensions.TimestampedPrintHandler or
+// extensions.TimestampedHandler), so a line is never stamped twice. Use it to hand
+// a *log.Logger to code that expects one —
 // for example a database driver's logger — without hand-wiring the flags:
 //
-//	dbLog := logger.StdLog(levels.Info, "sqlite ")
+//	dbLog := logger.StdLog(adapters.Info, "sqlite ")
 //
 // Each call returns a fresh *log.Logger over a fresh writer; the returned logger
 // routes through WriteLog, which serializes writes per sink.
@@ -239,7 +253,7 @@ func (l *Logger) WriteLog(level LogLevel, message []byte) (int, error) {
 	switch len(sinks) {
 	case 1:
 		// fast path: single sink, write inline without goroutine or WaitGroup.
-		err := writeSink(sinks[0], message)
+		err := writeSink(sinks[0], level, message)
 		if !anyHandlerActive {
 			// sole sink was a hook below the minimum level; return 0 per contract.
 			return 0, err
@@ -256,7 +270,7 @@ func (l *Logger) WriteLog(level LogLevel, message []byte) (int, error) {
 
 		write := func(w io.Writer) {
 			defer wg.Done()
-			if err := writeSink(w, message); err != nil {
+			if err := writeSink(w, level, message); err != nil {
 				mu.Lock()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -353,14 +367,17 @@ func (l *Logger) WriterAs(level LogLevel) io.Writer {
 }
 
 // ensureThreadSafe wraps w in a mutex-guarded writer so the logger never invokes a
-// given sink's Write concurrently. Writers produced by this package's handlers are
-// already guarded and are returned unchanged. Pointer-type sinks are deduplicated:
+// given sink's Write concurrently. Writers built by the extensions package's sink factories
+// are already guarded and are returned unchanged. Pointer-type sinks are deduplicated:
 // the same pointer registered multiple times (directly, via WithMinLevel, or as a hook)
 // gets one shared mutex so writes serialize.
 //
 // This method must be called with l.m held (or before l is published, in NewLogger).
 func (l *Logger) ensureThreadSafe(w io.Writer) io.Writer {
 	if _, ok := w.(*writer); ok {
+		return w
+	}
+	if _, ok := w.(*sink.Func); ok {
 		return w
 	}
 
@@ -381,6 +398,24 @@ func (l *Logger) ensureThreadSafe(w io.Writer) io.Writer {
 	return &writer{original: w, h: w.Write, shared: shared}
 }
 
+// WithMinLevel wraps handler so that Logger treats it as a LeveledHandler with
+// the given minimum level. The returned writer forwards Write calls to handler
+// unchanged; the only added behaviour is the MinLevel() method that Logger.WriteLog
+// reads via interface assertion. Use this to give one handler a threshold
+// distinct from the parent Logger's minimumLogLevel — for example, to send only
+// high-severity messages to the console while sending everything to a file:
+//
+//	file    := extensions.RotatingFileHandler("./logs", "app")
+//	console := loginjector.WithMinLevel(adapters.Warning, extensions.TimestampedPrintHandler())
+//	logger  := loginjector.NewLogger(adapters.Info, file, console)
+//
+// The returned writer is itself thread-safe via Logger's existing ensureThreadSafe
+// wrapping at registration. Calling WithMinLevel on an already-leveled writer
+// replaces the inner MinLevel().
+func WithMinLevel(level LogLevel, handler io.Writer) io.Writer {
+	return &leveledWriter{inner: handler, level: level}
+}
+
 // LogLevel is a log level.
 type LogLevel int
 
@@ -392,6 +427,60 @@ type hook struct {
 	ID     HookID
 	Level  LogLevel
 	Writer io.Writer
+}
+
+// leveledWriter is the concrete LeveledHandler implementation behind WithMinLevel.
+type leveledWriter struct {
+	inner io.Writer
+	level LogLevel
+}
+
+func (lw *leveledWriter) Write(p []byte) (int, error) { return lw.inner.Write(p) }
+
+// WriteLevel forwards p with its level to the inner writer when it is a
+// LevelWriter, and to its Write otherwise.
+func (lw *leveledWriter) WriteLevel(level LogLevel, p []byte) (int, error) {
+	if inner, ok := lw.inner.(LevelWriter); ok {
+		return inner.WriteLevel(level, p)
+	}
+	return lw.inner.Write(p)
+}
+
+func (lw *leveledWriter) MinLevel() LogLevel { return lw.level }
+
+// writer is a thread-safe writer.
+type writer struct {
+	m        sync.Mutex
+	shared   *sync.Mutex // when set, the mutex to use instead of &w.m (shared per-identity registry)
+	h        func(msg []byte) (n int, err error)
+	original io.Writer // the unwrapped sink; set by ensureThreadSafe for unwrapLeveled.
+}
+
+// Write writes the message to the handler.
+func (w *writer) Write(p []byte) (n int, err error) {
+	mu := w.mutex()
+	mu.Lock()
+	defer mu.Unlock()
+	return w.h(p)
+}
+
+// WriteLevel writes p to the handler with the given level while holding its sink mutex.
+func (w *writer) WriteLevel(level LogLevel, p []byte) (n int, err error) {
+	mu := w.mutex()
+	mu.Lock()
+	defer mu.Unlock()
+	if original, ok := w.original.(LevelWriter); ok {
+		return original.WriteLevel(level, p)
+	}
+	return w.h(p)
+}
+
+// mutex returns the shared per-sink mutex when one is set, else the writer's own.
+func (w *writer) mutex() *sync.Mutex {
+	if w.shared != nil {
+		return w.shared
+	}
+	return &w.m
 }
 
 // unwrapLeveled returns the LeveledHandler view of h, peeling the ensureThreadSafe
@@ -409,10 +498,11 @@ func unwrapLeveled(h io.Writer) (LeveledHandler, bool) {
 	return nil, false
 }
 
-// writeSink writes p to w, recovering any panic and returning it as an error that
-// carries the stack trace. A one-line notice goes to os.Stderr directly, not through
-// the std log package, because std log output may itself be routed into this logger.
-func writeSink(w io.Writer, p []byte) (err error) {
+// writeSink writes p to w, passing level to an optional LevelWriter. It recovers any
+// panic and returns an error that carries the stack trace. A one-line notice goes to
+// os.Stderr directly, not through the std log package, because std log output may
+// itself be routed into this logger.
+func writeSink(w io.Writer, level LogLevel, p []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			typ := sinkTypeName(w)
@@ -445,28 +535,39 @@ func writeSink(w io.Writer, p []byte) (err error) {
 		}
 	}()
 
-	_, err = w.Write(p)
+	if lw, ok := w.(LevelWriter); ok {
+		_, err = lw.WriteLevel(level, p)
+	} else {
+		_, err = w.Write(p)
+	}
 	return err
 }
 
 // sinkTypeName returns the type name of the unwrapped sink w.
 // For a *writer with an original sink, it returns the type of the original.
 // For a *leveledWriter, it peels through to the inner writer.
+// A sink built by a factory is reported by its own type name.
 // Otherwise it returns the type of w.
 func sinkTypeName(w io.Writer) string {
-	if wr, ok := w.(*writer); ok && wr.original != nil {
-		w = wr.original
+	for {
+		switch inner := w.(type) {
+		case *writer:
+			if inner.original == nil {
+				return fmt.Sprintf("%T", w)
+			}
+			w = inner.original
+		case *leveledWriter:
+			w = inner.inner
+		default:
+			return fmt.Sprintf("%T", w)
+		}
 	}
-
-	if lw, ok := w.(*leveledWriter); ok {
-		w = lw.inner
-	}
-
-	return fmt.Sprintf("%T", w)
 }
 
 // sinkIdentity peels *leveledWriter layers and returns the identity key for deduplication.
-// If the innermost writer is a *writer, it returns (nil, false) — already self-serialised.
+// If the innermost writer is a *writer, it returns (nil, false) — the root's registration
+// wrapper carries the original sink and its shared mutex.
+// A sink built by an extensions factory is already self-serialised and also returns (nil, false).
 // If it's nil or not a pointer type, it returns (nil, false) — not deduplicable.
 // Otherwise it returns (inner, true) where inner is a pointer sink.
 // Caller must not mutate the returned key.
@@ -475,8 +576,11 @@ func sinkIdentity(w io.Writer) (key io.Writer, ok bool) {
 		w = lw.inner
 	}
 
-	// a *writer is already self-serialised.
+	// a *writer is the root's registration wrapper, carrying the original sink and shared mutex.
 	if _, isWriter := w.(*writer); isWriter {
+		return nil, false
+	}
+	if _, isFunc := w.(*sink.Func); isFunc {
 		return nil, false
 	}
 

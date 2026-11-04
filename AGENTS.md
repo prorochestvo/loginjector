@@ -17,14 +17,15 @@ there is no binary, database, or server.
 
 | Path | Role |
 |---|---|
-| `logger.go` | `Logger`: fan-out, hooks, `LeveledHandler`, `WriterAs`, `StdLog`, `Panicf`/`Panic` |
-| `handler.go` | handler factories: console, rotating file, file-by-format, Telegram, `WithMinLevel` |
-| `filelogger.go` | `NewFileLogger` bootstrap and its options |
-| `error.go`, `closers.go` | error types (`TraceError`, `StackTraceError`, `PublicError`, `HttpError`); `CloseOr*` |
-| `levels/` | optional `Debug`..`Critical` ladder, `Parse`/`Name` |
-| `httptap/` | opt-in HTTP middleware: payload, access, recover; the root package never imports it |
-| `internal/` | stack-trace parsing for `error.go`; `internal/synctest` is test-only scaffolding |
-| `gorules/`, `scripts/` | custom lint rules (ruleguard DSL) and text-level checks |
+| `logger.go` | Root `Logger`: fan-out, hooks, `WithMinLevel`, `LeveledHandler`, `LevelWriter`, `WriterAs`, `StdLog`, `Panicf`/`Panic`; root-private `*writer` registration wrapper |
+| `error.go` | Error types: `TraceError`, `StackTraceError`, `PublicError`, `HttpError` |
+| `extensions/` | Opt-in file and print sinks, `NewFileLogger`, Telegram, HTTP payload capture and recover middleware, access logging, and Axiom facade |
+| `adapters/` | Optional level ladder and closer helpers |
+| `internal/sink/` | Guarded factory writer and shared timestamped renderer |
+| `internal/httpx/` | Shared response-writer composition and path escaping |
+| `internal/integrations/axiom/` | Axiom implementation behind the `extensions` facade |
+| `internal/`, `internal/synctest/` | Stack-trace parsing and test-only scaffolding |
+| `configs/linter/`, `scripts/` | Ruleguard rules in `configs/linter/custom-rules.go` and text-level checks |
 
 ## Tripwires
 
@@ -46,13 +47,20 @@ there is no binary, database, or server.
   second registration of the same sink; std `log` re-entry from a sink; a sink writing
   to the `WriterAs` adapter the outer call came through.
 - `Panicf`/`Panic` panic; the library never calls `os.Exit`.
-- `TelegramHandler` is a synchronous HTTP POST (20 s timeout): a matching message blocks
-  its caller.
-- `httptap` redaction: the default header and query-parameter sets in
-  `httptap/redact.go` are always on and case-insensitive; options only add names. Do not
+- `extensions.TelegramHandler` is a synchronous HTTP POST (20 s timeout): a matching message
+  blocks its caller.
+- `LevelWriter` sinks get `WriteLevel`, not `Write`. The Axiom sink (`extensions.NewAxiomHandler`)
+  is async, bounded, and needs `Close`/`Shutdown` before exit.
+- HTTP redaction: the default header and query-parameter sets in
+  `extensions/http_redact.go` are always on and case-insensitive; options only add names. Do not
   weaken them.
-- Runtime dependencies: standard library only (`testify` is test-only; `gorules` needs
-  `go-ruleguard/dsl` and is never compiled); the module builds with `CGO_ENABLED=0`.
+- Runtime dependencies: standard library only (`testify` is test-only;
+  `configs/linter/custom-rules.go` needs `go-ruleguard/dsl` and is never compiled);
+  the module builds with `CGO_ENABLED=0`.
+- The root and `internal/{sink,httpx,synctest}` never import `adapters` or `extensions`; nothing
+  outside tests imports `extensions`.
+- `WithMinLevel` stays in the root: `sinkIdentity` and `sinkTypeName` peel the concrete
+  `*leveledWriter`.
 - Keep the `…ForRaceCondition` tests when touching the fan-out or the file handlers.
 - `TestFileByFormatHandlerV2` predates the one-`Test*`-per-symbol rule; do not rename
   legacy tests in unrelated changes.
@@ -64,13 +72,18 @@ before starting non-trivial work. Project delta:
 
 - **Gate:** `make verify`.
 - **Review focus:** standard staged set — see `pipeline:working-agreement`.
-- **Branching:** `type/<issue>-<slug>`, PR into `main`, squash-merged; CI must be green.
+- **Branching:** `dev` is the integration branch: `type/<issue>-<slug>` → PR into `dev`,
+  squash-merged, CI green. `main` holds released code only and is never committed to
+  directly.
 
 ## Release and CHANGELOG
 
-- A branch lands as one squash commit and gets one version section: collect entries
-  under `[Unreleased]`, promote to `[X.Y.Z] - YYYY-MM-DD` on release, add its compare link,
-  and move `[Unreleased]`'s link base to the new tag.
+- A branch lands in `dev` as one squash commit and adds its entries under `[Unreleased]`.
+- A release is a PR into `dev` that promotes `[Unreleased]` to `[X.Y.Z] - YYYY-MM-DD`, adds
+  its compare link, and moves `[Unreleased]`'s link base to the new tag. After it merges,
+  `main` is fast-forwarded to `dev` (`git push origin origin/dev:main`; never a squash or
+  merge commit, which would make the branches diverge) and the tag goes on that commit.
+  Moving `main` and tagging are the owner's steps.
 - The 1.0.x line is pre-stable: next version = latest tag
   (`git tag --sort=-version:refname | head -1`) + PATCH, regardless of `Added` or
   breaking entries; breaking changes are documented in the version's
