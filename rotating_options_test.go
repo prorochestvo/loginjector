@@ -97,6 +97,34 @@ func TestRotatingFileHandler_StableCurrentName(t *testing.T) {
 		require.NotContains(t, files, idxName("access", 3), "no backup is created for the current live slot")
 	})
 
+	t.Run("maxFiles one preserves the triggering stable backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "access", WithMaxFiles(1), WithMaxFileSize(3), WithStableCurrentName())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("access", 1))
+		require.FileExists(t, backup)
+		contents, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		require.Equal(t, "abcd\n", string(contents))
+	})
+	t.Run("rotation past a planted backup protects the renamed slot", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "access", WithStableCurrentName(), WithMaxFiles(1), WithMaxFileSize(3))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("access", 1)), []byte("planted\n"), defaultFilePermissions))
+
+		writeRotating(t, h, "abcd")
+
+		contents, err := os.ReadFile(filepath.Join(dir, idxName("access", 2)))
+		require.NoError(t, err)
+		require.Equal(t, "abcd\n", string(contents))
+	})
+
 	t.Run("resume seeds size from prefix.log; next index is max+1", func(t *testing.T) {
 		t.Parallel()
 
@@ -232,6 +260,39 @@ func TestRotatingFileHandler_MaxAge(t *testing.T) {
 		require.Contains(t, files, idxName("app", 1), "WithMaxAge(-1) must disable age pruning")
 		require.Contains(t, files, idxName("app", 2), "WithMaxAge(-1) must disable age pruning")
 	})
+
+	t.Run("maxFiles one preserves the triggering aged backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithMaxAge(time.Hour))
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1))
+		require.FileExists(t, backup)
+		contents, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		require.Equal(t, "abcd\n", string(contents))
+	})
+
+	t.Run("nanosecond maxAge keeps the newest backup until the next rotation", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(3), WithMaxFileSize(3), WithMaxAge(time.Nanosecond))
+
+		writeRotating(t, h, "abcd")
+		require.FileExists(t, filepath.Join(dir, idxName("app", 1)))
+
+		writeRotating(t, h, "efgh")
+		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)))
+		backup := filepath.Join(dir, idxName("app", 2))
+		require.FileExists(t, backup)
+		contents, err := os.ReadFile(backup)
+		require.NoError(t, err)
+		require.Equal(t, "efgh\n", string(contents))
+	})
 }
 
 // TestPruneRotation exercises the retention core directly: it is deterministic (mtimes are
@@ -248,7 +309,7 @@ func TestPruneRotation(t *testing.T) {
 		touchOld(t, filepath.Join(dir, idxName("app", 3)), "f3\n", 0)
 
 		cfg := rotatingFileConfig{maxFiles: 100, maxAge: time.Hour}
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 4), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 4), 0, time.Now()))
 
 		files := extractFilesWithGzOrFail(t, dir)
 		require.NotContains(t, files, idxName("app", 1))
@@ -265,7 +326,7 @@ func TestPruneRotation(t *testing.T) {
 		touchOld(t, filepath.Join(dir, idxName("app", 3)), "live\n", 2*time.Hour) // the current live, old
 
 		cfg := rotatingFileConfig{maxFiles: 100, maxAge: time.Hour}
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 3), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 3), 0, time.Now()))
 
 		files := extractFilesWithGzOrFail(t, dir)
 		require.NotContains(t, files, idxName("app", 1), "over-age backups go")
@@ -281,7 +342,7 @@ func TestPruneRotation(t *testing.T) {
 			touchOld(t, filepath.Join(dir, idxName("app", i)), fmt.Sprintf("f%d\n", i), 0)
 		}
 		cfg := rotatingFileConfig{maxFiles: 3, maxAge: 0}
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), 0, time.Now()))
 
 		files := extractFilesWithGzOrFail(t, dir)
 		require.NotContains(t, files, idxName("app", 1))
@@ -302,7 +363,7 @@ func TestPruneRotation(t *testing.T) {
 		touchOld(t, filepath.Join(dir, idxName("app", 5)), "f5\n", 0)
 
 		cfg := rotatingFileConfig{maxFiles: 3, maxAge: time.Hour}
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), 0, time.Now()))
 
 		files := extractFilesWithGzOrFail(t, dir)
 		// age drops 1,2; count then keeps the newest 2 of {3,4,5}, dropping 3.
@@ -324,7 +385,7 @@ func TestPruneRotation(t *testing.T) {
 		touchOld(t, filepath.Join(dir, idxName("app", 3)), "three\n", 0)
 
 		cfg := rotatingFileConfig{maxFiles: 3, maxAge: 0, compress: true}
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), 0, time.Now()))
 
 		// three backup UNITS {1,2,3}; keep newest two -> unit 1 (both files) removed.
 		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)))
@@ -341,11 +402,61 @@ func TestPruneRotation(t *testing.T) {
 		touchOld(t, filepath.Join(dir, idxName("app", 2)), "f2\n", 0)
 
 		cfg := rotatingFileConfig{maxFiles: 100, maxAge: -1}
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), 0, time.Now()))
 
 		files := extractFilesWithGzOrFail(t, dir)
 		require.Contains(t, files, idxName("app", 1), "negative maxAge must not prune by age")
 		require.Contains(t, files, idxName("app", 2))
+	})
+
+	t.Run("maxFiles one preserves the protected backup only", func(t *testing.T) {
+		t.Parallel()
+		setup := func(t *testing.T, protectIdx int) map[string]string {
+			t.Helper()
+			dir := t.TempDir()
+			for i := 1; i <= 3; i++ {
+				touchOld(t, filepath.Join(dir, idxName("app", i)), fmt.Sprintf("f%d\n", i), 0)
+			}
+			cfg := rotatingFileConfig{maxFiles: 1}
+			require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), protectIdx, time.Now()))
+			return extractFilesWithGzOrFail(t, dir)
+		}
+
+		t.Run("protect index 2 keeps only it", func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, map[string]string{idxName("app", 2): "f2\n"}, setup(t, 2))
+		})
+		t.Run("protect index 0 keeps none", func(t *testing.T) {
+			t.Parallel()
+			require.Empty(t, setup(t, 0))
+		})
+	})
+
+	t.Run("protected old backup occupies one count slot", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		for i := 1; i <= 5; i++ {
+			touchOld(t, filepath.Join(dir, idxName("app", i)), fmt.Sprintf("f%d\n", i), 0)
+		}
+		cfg := rotatingFileConfig{maxFiles: 3}
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), 1, time.Now()))
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Len(t, files, 2)
+		require.Contains(t, files, idxName("app", 1))
+		require.Contains(t, files, idxName("app", 5))
+	})
+
+	t.Run("protected over-age backup survives age pruning", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		for i := 1; i <= 3; i++ {
+			touchOld(t, filepath.Join(dir, idxName("app", i)), fmt.Sprintf("f%d\n", i), 2*time.Hour)
+		}
+		cfg := rotatingFileConfig{maxFiles: 100, maxAge: time.Hour}
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 9), 3, time.Now()))
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Len(t, files, 1)
+		require.Contains(t, files, idxName("app", 3))
 	})
 }
 
@@ -364,6 +475,91 @@ func TestRotatingFileHandler_Compress(t *testing.T) {
 		require.FileExists(t, gzPath)
 		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)), "plaintext must be removed after compression")
 		require.Equal(t, "hello\nworld\n", readGzOrFail(t, gzPath), "the .gz must decompress to the pre-rotation plaintext")
+	})
+
+	t.Run("maxFiles one preserves the triggering compressed backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+	})
+
+	t.Run("compression rotation error reports persisted input length", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFileSize(3), WithCompress())
+		tmpPath := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension+"."+tmpExtension)
+		require.NoError(t, os.WriteFile(tmpPath, []byte("planted"), defaultFilePermissions))
+
+		n, err := h.Write([]byte("abcd"))
+		require.Error(t, err)
+		require.Equal(t, 4, n)
+	})
+
+	t.Run("maxFiles one keeps only the newest compressed backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
+
+		for _, message := range []string{"abcd", "efgh", "ijkl"} {
+			writeRotating(t, h, message)
+		}
+
+		files := extractFilesWithGzOrFail(t, dir)
+		require.Len(t, files, 1)
+		require.Equal(t, "ijkl\n", files[idxName("app", 3)+"."+gzipExtension])
+	})
+
+	t.Run("zero maxFiles preserves the triggering compressed backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(0), WithMaxFileSize(3), WithCompress())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+	})
+
+	t.Run("nanosecond maxAge and compression preserve the newest backup", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithMaxAge(time.Nanosecond), WithCompress())
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+	})
+
+	t.Run("higher pre-existing index survives compressed rotation", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		h := RotatingFileHandler(dir, "app", WithMaxFiles(1), WithMaxFileSize(3), WithCompress())
+		higher := filepath.Join(dir, idxName("app", 2))
+		require.NoError(t, os.WriteFile(higher, []byte("planted\n"), defaultFilePermissions))
+
+		writeRotating(t, h, "abcd")
+
+		backup := filepath.Join(dir, idxName("app", 1)+"."+gzipExtension)
+		require.FileExists(t, backup)
+		require.Equal(t, "abcd\n", readGzOrFail(t, backup))
+		contents, err := os.ReadFile(higher)
+		require.NoError(t, err)
+		require.True(t, strings.HasPrefix(string(contents), "planted\n"))
 	})
 
 	t.Run("gz backup permissions are 0640", func(t *testing.T) {
@@ -561,6 +757,24 @@ func TestRotatingFileHandler_OptionsForRaceCondition(t *testing.T) {
 	for _, m := range messages {
 		assert.Contains(t, all, m, "every message must survive across rotation, rename and compression")
 	}
+
+	compressDir := t.TempDir()
+	compressHandler := RotatingFileHandler(compressDir, "race", WithMaxFiles(1), WithMaxFileSize(20), WithCompress())
+	var compressWriteErr error
+	var compressWG sync.WaitGroup
+	for range 16 {
+		compressWG.Add(1)
+		go func() {
+			defer compressWG.Done()
+			if _, e := compressHandler.Write([]byte("concurrent compressed message")); e != nil {
+				mu.Lock()
+				compressWriteErr = errors.Join(compressWriteErr, e)
+				mu.Unlock()
+			}
+		}()
+	}
+	compressWG.Wait()
+	require.NoError(t, compressWriteErr)
 }
 
 // BenchmarkRotatingFileHandler_Write measures the non-rotating hot path with all options

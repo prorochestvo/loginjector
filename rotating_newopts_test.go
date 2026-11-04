@@ -102,7 +102,7 @@ func TestWithMaxAgeDays(t *testing.T) {
 		var cfg rotatingFileConfig
 		cfg.maxFiles = 100
 		WithMaxAgeDays(1)(&cfg)
-		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 3), time.Now()))
+		require.NoError(t, pruneRotation(dir, "app", cfg, idxName("app", 3), 0, time.Now()))
 
 		require.NoFileExists(t, filepath.Join(dir, idxName("app", 1)),
 			"the 48h-old backup must be pruned under a 1-day age bound")

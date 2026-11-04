@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -41,6 +42,52 @@ func TestNewFileLogger(t *testing.T) {
 		require.NoError(t, err)
 		require.Contains(t, files, "app.00000001.log")
 		require.Contains(t, files["app.00000001.log"], "hello world")
+	})
+
+	t.Run("pre-existing folder keeps its permissions", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("directory permission bits are not portable on Windows")
+		}
+		t.Parallel()
+
+		dir := t.TempDir()
+		folder := filepath.Join(dir, "pre")
+		require.NoError(t, os.Mkdir(folder, 0o700))
+		require.NoError(t, os.Chmod(folder, 0o755))
+
+		_, err := NewFileLogger(folder, "app", minLevel, WithoutPrinter())
+		require.NoError(t, err)
+
+		fi, err := os.Stat(folder)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o755), fi.Mode().Perm())
+	})
+
+	t.Run("created folder is 0750", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("directory permission bits are not portable on Windows")
+		}
+		t.Parallel()
+
+		dir := t.TempDir()
+		folder := filepath.Join(dir, "a", "b")
+		_, err := NewFileLogger(folder, "app", minLevel, WithoutPrinter())
+		require.NoError(t, err)
+
+		fi, err := os.Stat(folder)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o750), fi.Mode().Perm())
+	})
+
+	t.Run("folder path that is a regular file errors", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		folder := filepath.Join(dir, "file")
+		require.NoError(t, os.WriteFile(folder, []byte("file"), 0o600))
+
+		_, err := NewFileLogger(folder, "app", minLevel, WithoutPrinter())
+		require.Error(t, err)
 	})
 
 	t.Run("file lines are timestamped", func(t *testing.T) {
@@ -93,6 +140,11 @@ func TestNewFileLogger(t *testing.T) {
 		l, err := NewFileLogger("", prefix, minLevel, WithTempDirFallback(), WithoutPrinter())
 		require.NoError(t, err)
 		require.NotNil(t, l)
+		if runtime.GOOS != "windows" {
+			fi, statErr := os.Stat(expectedDir)
+			require.NoError(t, statErr)
+			require.Equal(t, os.FileMode(0o750), fi.Mode().Perm())
+		}
 
 		t.Cleanup(func() {
 			// remove only the files this test created, leave the shared dir intact

@@ -8,15 +8,29 @@ import (
 )
 
 // CloseOrPanic closes the closer and panics if there is an error.
+// A nil closer is a no-op.
 func CloseOrPanic(closer io.Closer) {
+	if closer == nil {
+		return
+	}
 	err := closer.Close()
 	if err != nil {
 		panic(err)
 	}
 }
 
-// CloseOrLog closes the closer and logs the error if there is one.
+// CloseOrLog closes the closer and logs the error if there is one to the std log package.
+// A nil closer is a no-op.
+//
+// WARNING: CloseOrLog writes to the standard library log package. Do not call it from
+// inside a sink's Write method when std log output is routed through the logger itself
+// (e.g., via log.SetOutput(l.WriterAs(...)) or StdLog()); the re-entry can deadlock.
+// Inside a sink, use CloseOrLogError with an unrelated writer, or CloseOrJoin to
+// accumulate the error.
 func CloseOrLog(closer io.Closer) {
+	if closer == nil {
+		return
+	}
 	err := closer.Close()
 	if err != nil {
 		log.Println(err)

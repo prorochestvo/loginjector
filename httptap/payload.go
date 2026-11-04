@@ -16,9 +16,13 @@ type payloadConfig struct {
 	// maxRequestBody and maxResponseBody: <0 = unlimited, 0 = omit, >0 = cap at N bytes.
 	maxRequestBody  int
 	maxResponseBody int
-	// redactHeaders is case-canonicalised via http.CanonicalHeaderKey; always contains
+	// redactHeaders is lowercase-folded via redactKey(); always contains
 	// the built-in sensitive set and may contain caller-supplied additions.
 	redactHeaders map[string]struct{}
+	// redactQueryParams holds lowercase parameter names to redact; always contains
+	// the built-in set (access_token, refresh_token, etc.) and may contain caller-supplied
+	// additions.
+	redactQueryParams map[string]struct{}
 	// summaryWriter, when non-nil, overrides os.Stdout for the per-request summary line
 	// for this handler only.
 	summaryWriter io.Writer
@@ -32,16 +36,21 @@ type payloadConfig struct {
 const defaultMaxBody = 64 << 10 // 65536
 
 // defaultPayloadConfig returns the baseline config: 64 KiB body-capture cap,
-// fixed redaction set, os.Stdout summary.
+// fixed redaction sets, os.Stdout summary.
 func defaultPayloadConfig() payloadConfig {
 	m := make(map[string]struct{}, len(defaultRedactHeaders))
 	for _, h := range defaultRedactHeaders {
-		m[h] = struct{}{}
+		m[redactKey(h)] = struct{}{}
+	}
+	q := make(map[string]struct{}, len(defaultRedactQueryParams))
+	for name := range defaultRedactQueryParams {
+		q[redactKey(name)] = struct{}{}
 	}
 	return payloadConfig{
-		maxRequestBody:  defaultMaxBody,
-		maxResponseBody: defaultMaxBody,
-		redactHeaders:   m,
+		maxRequestBody:    defaultMaxBody,
+		maxResponseBody:   defaultMaxBody,
+		redactHeaders:     m,
+		redactQueryParams: q,
 	}
 }
 
@@ -82,12 +91,25 @@ func WithoutBodies() PayloadOption {
 
 // WithRedactHeaders adds header names to the redaction set used when logging
 // request and response headers. The default set (Authorization,
-// Proxy-Authorization, Cookie, Set-Cookie) is always present and cannot be
-// removed; this option is additive only. Matching is case-insensitive.
+// Proxy-Authorization, Cookie, Set-Cookie, X-Api-Key, X-Auth-Token) is always
+// present and cannot be removed; this option is additive only. Matching is
+// case-insensitive.
 func WithRedactHeaders(names ...string) PayloadOption {
 	return func(c *payloadConfig) {
 		for _, n := range names {
-			c.redactHeaders[http.CanonicalHeaderKey(n)] = struct{}{}
+			c.redactHeaders[redactKey(n)] = struct{}{}
+		}
+	}
+}
+
+// WithRedactQueryParams adds query parameter names to the redaction set used
+// when logging request URIs. The default set (access_token, refresh_token,
+// id_token, client_secret, api_key, apikey, password) is always present and
+// cannot be removed; this option is additive only. Matching is case-insensitive.
+func WithRedactQueryParams(names ...string) PayloadOption {
+	return func(c *payloadConfig) {
+		for _, n := range names {
+			c.redactQueryParams[redactKey(n)] = struct{}{}
 		}
 	}
 }
@@ -106,8 +128,11 @@ func WithSummaryWriter(w io.Writer) PayloadOption {
 // It creates a new HTTP middleware handler that logs the full request and
 // response payloads (request line, headers, bodies, response status) to the
 // given logger at the specified level. The Authorization, Proxy-Authorization,
-// Cookie, and Set-Cookie headers are always redacted. This function is
-// equivalent to calling NewPayloadHandlerWithOptions with no options.
+// Cookie, Set-Cookie, X-Api-Key, and X-Auth-Token headers are always redacted.
+// Query parameters access_token, refresh_token, id_token, client_secret, api_key,
+// apikey, and password are logged with values redacted as [REDACTED].
+// This function is equivalent to calling NewPayloadHandlerWithOptions with no
+// options.
 //
 // A nil logger or nextFunc is a programmer error and panics.
 func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, nextFunc http.HandlerFunc) http.HandlerFunc {
@@ -116,8 +141,8 @@ func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, n
 
 // NewPayloadHandlerWithOptions creates an HTTP middleware handler like
 // NewPayloadHandler but accepts functional options to tune body-capture limits,
-// header redaction, and the summary destination. Calling it with no options
-// produces byte-identical logger output and the same stdout summary as
+// header and query redaction, and the summary destination. Calling it with no
+// options produces byte-identical logger output and the same stdout summary as
 // NewPayloadHandler.
 //
 // A nil logger or nextFunc is a programmer error and panics.
@@ -126,6 +151,7 @@ func NewPayloadHandler(logger *loginjector.Logger, level loginjector.LogLevel, n
 //   - WithMaxRequestBody / WithMaxResponseBody — cap or disable body buffering.
 //   - WithoutBodies — disable both request and response body capture.
 //   - WithRedactHeaders — add header names to the always-on redaction set.
+//   - WithRedactQueryParams — add query parameter names to the always-on redaction set.
 //   - WithSummaryWriter — override the summary destination for this handler only.
 func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.LogLevel, nextFunc http.HandlerFunc, opts ...PayloadOption) http.HandlerFunc {
 	if logger == nil {
@@ -148,6 +174,7 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 			payloadSize := i.payload.Len()
 			responseSize := i.response.Len()
 			responseCode := i.code
+			escapedPath := escapeControl(r.URL.Path)
 
 			wg := sync.WaitGroup{}
 			wg.Add(1)
@@ -168,7 +195,7 @@ func NewPayloadHandlerWithOptions(logger *loginjector.Logger, level loginjector.
 			_, _ = fmt.Fprintf(sw, "[%d] %s %s: %0.3f msec; ↓%0.2fKb; ↑%0.2fKb;\n",
 				responseCode,
 				r.Method,
-				r.URL.Path,
+				escapedPath,
 				float64(elapsed)/1000000,
 				float64(payloadSize)/1024,
 				float64(responseSize)/1024,
