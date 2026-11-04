@@ -77,9 +77,7 @@ func LineTrace(skip int) string {
 		// top-level generic functions ("pkg.Foo[...]"). It must be removed before
 		// the last-dot split because the brackets contain dots. Methods on generic
 		// types ("pkg.(*T[...]).Method") are safe — their "[...]" is not at end-of-string.
-		if strings.HasSuffix(name, "[...]") {
-			name = name[:len(name)-len("[...]")]
-		}
+		name = strings.TrimSuffix(name, "[...]")
 		// strip the package path prefix: the last dot separates package from function.
 		if i := strings.LastIndex(name, "."); i >= 0 && i+1 < len(name) {
 			name = name[i+1:]

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -76,15 +77,16 @@ func idxName(prefix string, index int) string {
 }
 
 func TestRotatingFileHandler_StableCurrentName(t *testing.T) {
+	t.Parallel()
 	t.Run("live path fixed while indexed backups accumulate", func(t *testing.T) {
 		t.Parallel()
 
 		dir := t.TempDir()
 		h := RotatingFileHandler(dir, "access", WithMaxFileSize(10), WithMaxFiles(20), WithStableCurrentName())
 
-		writeRotating(t, h, "aaaaa") // access.log = "aaaaa\n" (6)
-		writeRotating(t, h, "bbbbb") // 12 > 10 -> rotate to access.00000001.log
-		writeRotating(t, h, "ccccc") // access.log = "ccccc\n"
+		writeRotating(t, h, "aaaaa") // access.log now holds "aaaaa\n" (6 bytes)
+		writeRotating(t, h, "bbbbb") // 12 bytes exceeds 10-byte limit, rotates to access.00000001.log
+		writeRotating(t, h, "ccccc") // access.log now holds "ccccc\n"
 		writeRotating(t, h, "ddddd") // 12 > 10 -> rotate to access.00000002.log
 		writeRotating(t, h, "eeeee") // access.log = "eeeee\n" (still fits)
 
@@ -139,7 +141,7 @@ func TestRotatingFileHandler_StableCurrentName(t *testing.T) {
 		dir := t.TempDir()
 		h := RotatingFileHandler(dir, "access", WithMaxFileSize(5), WithMaxFiles(2), WithStableCurrentName())
 
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			writeRotating(t, h, "abcde") // 6 > 5 -> rotate on every write
 		}
 		writeRotating(t, h, "z") // fits (2 bytes) -> leaves a live prefix.log present
@@ -185,6 +187,7 @@ func TestRotatingFileHandler_StableCurrentName(t *testing.T) {
 }
 
 func TestRotatingFileHandler_MaxAge(t *testing.T) {
+	t.Parallel()
 	t.Run("backdated backups pruned on rotation, fresh kept", func(t *testing.T) {
 		t.Parallel()
 
@@ -235,6 +238,7 @@ func TestRotatingFileHandler_MaxAge(t *testing.T) {
 // set with os.Chtimes) and isolates the age/count/pair/live-exclusion rules from the write
 // path.
 func TestPruneRotation(t *testing.T) {
+	t.Parallel()
 	t.Run("age removes old, keeps fresh", func(t *testing.T) {
 		t.Parallel()
 
@@ -346,6 +350,7 @@ func TestPruneRotation(t *testing.T) {
 }
 
 func TestRotatingFileHandler_Compress(t *testing.T) {
+	t.Parallel()
 	t.Run("rotated backup is a valid gz of the original bytes", func(t *testing.T) {
 		t.Parallel()
 
@@ -402,7 +407,7 @@ func TestRotatingFileHandler_Compress(t *testing.T) {
 		dir := t.TempDir()
 		h := RotatingFileHandler(dir, "app", WithMaxFileSize(5), WithMaxFiles(3), WithCompress())
 
-		for i := 0; i < 6; i++ {
+		for range 6 {
 			writeRotating(t, h, "abcde") // 6 > 5 -> rotate + compress every write
 		}
 		writeRotating(t, h, "z") // fits, leaves a live file
@@ -449,7 +454,7 @@ func TestRotatingFileHandler_Compress(t *testing.T) {
 		for _, i := range []int{1, 2} {
 			var b bytes.Buffer
 			zw := gzip.NewWriter(&b)
-			_, _ = zw.Write([]byte(fmt.Sprintf("old-%d\n", i)))
+			_, _ = fmt.Fprintf(zw, "old-%d\n", i)
 			require.NoError(t, zw.Close())
 			require.NoError(t, os.WriteFile(filepath.Join(dir, idxName("app", i)+"."+gzipExtension), b.Bytes(), defaultFilePermissions))
 		}
@@ -519,6 +524,7 @@ func TestRotatingFileHandler_Compress(t *testing.T) {
 // option set on (stable name + age + compress); the handler's mutex-guarded writer must
 // serialize rotation, rename and synchronous compression with no race and no lost message.
 func TestRotatingFileHandler_OptionsForRaceCondition(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	h := RotatingFileHandler(dir, "race",
 		WithMaxFileSize(70), WithMaxFiles(10),
@@ -526,7 +532,7 @@ func TestRotatingFileHandler_OptionsForRaceCondition(t *testing.T) {
 	)
 
 	messages := make([]string, 0, 16)
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		messages = append(messages, fmt.Sprintf("%0.3d->>%s", i, uniqueToken()))
 	}
 
@@ -547,10 +553,11 @@ func TestRotatingFileHandler_OptionsForRaceCondition(t *testing.T) {
 	wg.Wait()
 	require.NoError(t, writeErr)
 
-	all := ""
+	var sb strings.Builder
 	for _, ctx := range extractFilesWithGzOrFail(t, dir) {
-		all += ctx + "\n"
+		fmt.Fprintf(&sb, "%s\n", ctx)
 	}
+	all := sb.String()
 	for _, m := range messages {
 		assert.Contains(t, all, m, "every message must survive across rotation, rename and compression")
 	}
@@ -567,7 +574,7 @@ func BenchmarkRotatingFileHandler_Write(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := h.Write(msg); err != nil {
 			b.Fatal(err)
 		}

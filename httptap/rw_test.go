@@ -275,10 +275,14 @@ func TestWrapInterceptor(t *testing.T) {
 		h := NewPayloadHandlerWithOptions(l, logLevelInfo, func(w http.ResponseWriter, r *http.Request) {
 			defer func() { _ = r.Body.Close() }()
 			hj, ok := w.(http.Hijacker)
-			require.True(t, ok, "handler must see Hijacker")
+			if !assert.True(t, ok, "handler must see Hijacker") {
+				return
+			}
 			conn, _, err := hj.Hijack()
-			require.NoError(t, err)
-			require.NotNil(t, conn)
+			if !assert.NoError(t, err) {
+				return
+			}
+			assert.NotNil(t, conn)
 			_ = conn.Close()
 		}, WithSummaryWriter(io.Discard))
 

@@ -32,7 +32,7 @@ func BenchmarkNewStackTraceError(b *testing.B) {
 		b.Run(fmt.Sprintf("depth=%d", depth), func(b *testing.B) {
 			b.ReportAllocs()
 			var e error
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				e = newStackTraceErrorAtDepth(depth)
 			}
 			benchTraceErrSink = e
@@ -48,7 +48,7 @@ func BenchmarkNewStackTraceError(b *testing.B) {
 func BenchmarkNewTraceError(b *testing.B) {
 	b.ReportAllocs()
 	var e error
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		e = NewTraceError()
 	}
 	benchTraceErrSink = e

@@ -21,7 +21,7 @@ var defaultRedactHeaders = []string{
 // sourced from an http.Header are always canonical, so no second canonicalisation
 // is needed here.
 func headerToStringWithRedact(header *http.Header, redact map[string]struct{}) string {
-	res := ""
+	var res strings.Builder
 	for key, v := range *header {
 		key = strings.TrimSpace(key)
 		if key == "" {
@@ -32,7 +32,10 @@ func headerToStringWithRedact(header *http.Header, redact map[string]struct{}) s
 		}
 		val := strings.Join(v, "; ")
 		val = strings.TrimSpace(val)
-		res += key + ": " + val + "\n"
+		res.WriteString(key)
+		res.WriteString(": ")
+		res.WriteString(val)
+		res.WriteString("\n")
 	}
-	return res
+	return res.String()
 }

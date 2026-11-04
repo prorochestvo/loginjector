@@ -14,18 +14,6 @@ import (
 // compile-time assertion: SafeBuffer must satisfy io.ReadWriter.
 var _ io.ReadWriter = (*SafeBuffer)(nil)
 
-// NewBuffer creates a new SafeBuffer seeded with the contents of buf, mirroring
-// bytes.NewBuffer. The caller should not use buf after this call.
-func NewBuffer(buf []byte) *SafeBuffer {
-	return &SafeBuffer{b: *bytes.NewBuffer(buf)}
-}
-
-// NewBufferString creates a new SafeBuffer seeded with the contents of s, mirroring
-// bytes.NewBufferString.
-func NewBufferString(s string) *SafeBuffer {
-	return &SafeBuffer{b: *bytes.NewBufferString(s)}
-}
-
 // SafeBuffer is a minimal, mutex-guarded wrapper around bytes.Buffer. The zero value
 // is ready to use. Unlike bytes.Buffer, all methods on SafeBuffer are safe to call
 // concurrently from multiple goroutines.
@@ -36,6 +24,18 @@ func NewBufferString(s string) *SafeBuffer {
 type SafeBuffer struct {
 	m sync.Mutex
 	b bytes.Buffer
+}
+
+// NewBuffer creates a new SafeBuffer seeded with the contents of buf, mirroring
+// bytes.NewBuffer. The caller should not use buf after this call.
+func NewBuffer(buf []byte) *SafeBuffer {
+	return &SafeBuffer{b: *bytes.NewBuffer(buf)}
+}
+
+// NewBufferString creates a new SafeBuffer seeded with the contents of s, mirroring
+// bytes.NewBufferString.
+func NewBufferString(s string) *SafeBuffer {
+	return &SafeBuffer{b: *bytes.NewBufferString(s)}
 }
 
 // Write appends the contents of p to the buffer, growing the buffer as needed.

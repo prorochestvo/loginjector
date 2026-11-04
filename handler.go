@@ -3,6 +3,7 @@ package loginjector
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,33 +39,33 @@ func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Wri
 			parts := multipart.NewWriter(payload)
 
 			if filePart, err := parts.CreateFormFile("document", fileName); err != nil {
-				return 0, fmt.Errorf("could not create request form file, details: %s", err)
+				return 0, fmt.Errorf("could not create request form file, details: %w", err)
 			} else if _, err = filePart.Write(msg); err != nil {
-				return 0, fmt.Errorf("could not write file part to request, details: %s", err)
+				return 0, fmt.Errorf("could not write file part to request, details: %w", err)
 			}
 
 			if err := parts.WriteField("chat_id", chatID); err != nil {
-				return 0, fmt.Errorf("could not write chat_id field to request: %s", err)
+				return 0, fmt.Errorf("could not write chat_id field to request: %w", err)
 			}
 
 			caption := strings.Join(labels, "\n")
 			caption = fmt.Sprintf("%s %s", time.Now().UTC().Format("2006-01-02 15:04:05"), caption)
 			caption = strings.TrimSpace(caption)
 			if err := parts.WriteField("caption", caption); err != nil {
-				return 0, fmt.Errorf("could not write caption field to request: %s", err)
+				return 0, fmt.Errorf("could not write caption field to request: %w", err)
 			}
 
 			if err := parts.WriteField("parse_mode", "HTML"); err != nil {
-				return 0, fmt.Errorf("could not write parse_mode field to request: %s", err)
+				return 0, fmt.Errorf("could not write parse_mode field to request: %w", err)
 			}
 
 			contentType := parts.FormDataContentType()
 
 			if err := parts.Close(); err != nil {
-				return 0, fmt.Errorf("could not close request: %s", err)
+				return 0, fmt.Errorf("could not close request: %w", err)
 			}
 
-			request, err := http.NewRequest("POST", url, payload)
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, payload)
 			if err != nil {
 				return 0, fmt.Errorf("could not create HTTP request: %v", redactToken(err.Error()))
 			}
@@ -86,6 +87,7 @@ func TelegramHandler(botToken, chatID, fileName string, labels ...string) io.Wri
 			rawResponse := bytes.NewBufferString("")
 			err = json.NewDecoder(io.TeeReader(r.Body, rawResponse)).Decode(&response)
 			if err != nil || !response.Ok {
+				//nolint:errorlint // err may be nil when response.Ok is false; %w would render %!w(<nil>)
 				return 0, fmt.Errorf("could not decode response: %v\n%s", err, rawResponse.String())
 			}
 
@@ -296,8 +298,8 @@ func RotatingFileHandler(folder, prefix string, opts ...RotatingFileOption) io.W
 			backupBase := rotatingFileName(prefix, index)
 			src := filepath.Join(folder, fileName)
 			if _, e := os.Stat(src); e == nil {
-				if e := os.Rename(src, filepath.Join(folder, backupBase)); e != nil {
-					err = errors.Join(err, e)
+				if renameErr := os.Rename(src, filepath.Join(folder, backupBase)); renameErr != nil {
+					err = errors.Join(err, renameErr)
 				} else if cfg.compress {
 					err = errors.Join(err, compressFile(folder, backupBase, cfg.fileMode))
 				}
@@ -403,7 +405,8 @@ func FileByFormatHandler(folder string, maxFilesInFolder int, fileNameGenerator 
 			var l uint64 = 0
 
 			if n, e := f.Write(bytes.TrimSpace(msg)); e != nil {
-				err = errors.Join(err, e)
+				// err is always nil here: the OpenFile failure path returned above.
+				err = errors.Join(e)
 			} else {
 				l += uint64(n)
 			}
@@ -725,7 +728,7 @@ func verifyFiles(folder string, limit int) error {
 	return err
 }
 
-const defaultFilePermissions = 0640
+const defaultFilePermissions = 0o640
 const defaultFileExtension = "log"
 const gzipExtension = "gz"
 const tmpExtension = "tmp"
@@ -750,7 +753,7 @@ func liveFileName(prefix string, index int, stableName bool) string {
 // it prefix.<8 hex>.log.gz has a 15-character middle and is silently dropped. The live
 // prefix.log (middle "log", length 3) is intentionally not an index and returns ok=false;
 // it is resolved by liveFileName, not this scan.
-func parseRotationIndex(base, prefix string) (index int, gz bool, ok bool) {
+func parseRotationIndex(base, prefix string) (index int, gz, ok bool) {
 	if strings.HasSuffix(base, "."+gzipExtension) {
 		gz = true
 		base = strings.TrimSuffix(base, "."+gzipExtension)
@@ -857,7 +860,7 @@ func pruneRotation(folder, prefix string, cfg rotatingFileConfig, liveBase strin
 	if keep < 0 {
 		keep = 0
 	}
-	for i := 0; i < len(survivors)-keep; i++ {
+	for i := range len(survivors) - keep {
 		remove(survivors[i])
 	}
 	return err
@@ -1037,14 +1040,14 @@ func (lw *leveledWriter) MinLevel() LogLevel          { return lw.level }
 
 var _ LeveledHandler = (*leveledWriter)(nil)
 
-// writer is a thread-safe writer
+// writer is a thread-safe writer.
 type writer struct {
 	m        sync.Mutex
 	h        func(msg []byte) (n int, err error)
 	original io.Writer // the unwrapped sink; set by ensureThreadSafe for unwrapLeveled.
 }
 
-// Write writes the message to the handler
+// Write writes the message to the handler.
 func (w *writer) Write(p []byte) (n int, err error) {
 	w.m.Lock()
 	defer w.m.Unlock()

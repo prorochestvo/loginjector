@@ -22,12 +22,21 @@ type LeveledHandler interface {
 	MinLevel() LogLevel
 }
 
+// Logger is describing the logger structure and its methods.
+type Logger struct {
+	minimumLogLevel LogLevel
+	handlers        []io.Writer
+	hooks           []*hook
+	hookSeq         uint64 // per-logger hook-ID counter, guarded by m.
+	m               sync.RWMutex
+}
+
 // NewLogger creates a new logger with the given minimum log level and handlers.
 // If no handlers are provided, a default TimestampedPrintHandler (timestamped
 // stdout) is added.
 // Each handler is wrapped so the logger never calls its Write concurrently, which
 // makes logging safe from multiple goroutines even with non-thread-safe handlers.
-func NewLogger(min LogLevel, handlers ...io.Writer) *Logger {
+func NewLogger(minLevel LogLevel, handlers ...io.Writer) *Logger {
 	if len(handlers) == 0 {
 		handlers = []io.Writer{TimestampedPrintHandler()}
 	}
@@ -38,50 +47,12 @@ func NewLogger(min LogLevel, handlers ...io.Writer) *Logger {
 	}
 
 	return &Logger{
-		minimumLogLevel: min,
+		minimumLogLevel: minLevel,
 		handlers:        safeHandlers,
 	}
 }
 
-// ensureThreadSafe wraps w in a mutex-guarded writer so the logger never invokes a
-// given sink's Write concurrently. Writers produced by this package's handlers are
-// already guarded and are returned unchanged.
-//
-// The original io.Writer reference is stored on the resulting *writer so that
-// unwrapLeveled can peel through the wrapper and detect LeveledHandler on the
-// underlying sink.
-func ensureThreadSafe(w io.Writer) io.Writer {
-	if _, ok := w.(*writer); ok {
-		return w
-	}
-	return &writer{original: w, h: w.Write}
-}
-
-// unwrapLeveled returns the LeveledHandler view of h, peeling the ensureThreadSafe
-// *writer wrapper if present. Returns (nil, false) when h is not leveled.
-func unwrapLeveled(h io.Writer) (LeveledHandler, bool) {
-	if w, ok := h.(*writer); ok {
-		if lh, ok := w.original.(LeveledHandler); ok {
-			return lh, true
-		}
-		return nil, false
-	}
-	if lh, ok := h.(LeveledHandler); ok {
-		return lh, true
-	}
-	return nil, false
-}
-
-// Logger is describing the logger structure and its methods
-type Logger struct {
-	minimumLogLevel LogLevel
-	handlers        []io.Writer
-	hooks           []*hook
-	hookSeq         uint64 // per-logger hook-ID counter, guarded by m.
-	m               sync.RWMutex
-}
-
-// SetMinLevel sets the minimum log level
+// SetMinLevel sets the minimum log level.
 func (l *Logger) SetMinLevel(level LogLevel) {
 	l.m.Lock()
 	defer l.m.Unlock()
@@ -147,7 +118,7 @@ func (l *Logger) StdLog(level LogLevel, prefix string) *log.Logger {
 	return log.New(l.WriterAs(level), prefix, log.Lmsgprefix)
 }
 
-// Unhook removes a hook from the logger
+// Unhook removes a hook from the logger.
 func (l *Logger) Unhook(id HookID) {
 	l.m.Lock()
 	defer l.m.Unlock()
@@ -251,7 +222,7 @@ func (l *Logger) WriteLog(level LogLevel, message []byte) (int, error) {
 	}
 }
 
-// Printf writes a formatted log message
+// Printf writes a formatted log message.
 func (l *Logger) Printf(level LogLevel, format string, args ...any) {
 	m := fmt.Sprintf(format, args...)
 	_, err := l.WriteLog(level, []byte(m+"\n"))
@@ -260,7 +231,7 @@ func (l *Logger) Printf(level LogLevel, format string, args ...any) {
 	}
 }
 
-// Print writes a log message
+// Print writes a log message.
 func (l *Logger) Print(level LogLevel, args ...any) {
 	m := fmt.Sprint(args...)
 	_, err := l.WriteLog(level, []byte(m+"\n"))
@@ -293,12 +264,12 @@ func (l *Logger) Panic(level LogLevel, args ...any) {
 	panic(m)
 }
 
-// Write writes a log message with the minimum log level
+// Write writes a log message with the minimum log level.
 func (l *Logger) Write(message []byte) (int, error) {
 	return l.WriteLog(l.minimumLogLevel, message)
 }
 
-// WriterAs returns a writer that writes to the logger as the given log level
+// WriterAs returns a writer that writes to the logger as the given log level.
 func (l *Logger) WriterAs(level LogLevel) io.Writer {
 	w := &writer{
 		h: func(msg []byte) (int, error) {
@@ -308,15 +279,44 @@ func (l *Logger) WriterAs(level LogLevel) io.Writer {
 	return w
 }
 
-// LogLevel is a log level
+// LogLevel is a log level.
 type LogLevel int
 
-// HookID is a unique identifier for a hook
+// HookID is a unique identifier for a hook.
 type HookID string
 
-// hook is a log hook
+// hook is a log hook.
 type hook struct {
 	ID     HookID
 	Level  LogLevel
 	Writer io.Writer
+}
+
+// ensureThreadSafe wraps w in a mutex-guarded writer so the logger never invokes a
+// given sink's Write concurrently. Writers produced by this package's handlers are
+// already guarded and are returned unchanged.
+//
+// The original io.Writer reference is stored on the resulting *writer so that
+// unwrapLeveled can peel through the wrapper and detect LeveledHandler on the
+// underlying sink.
+func ensureThreadSafe(w io.Writer) io.Writer {
+	if _, ok := w.(*writer); ok {
+		return w
+	}
+	return &writer{original: w, h: w.Write}
+}
+
+// unwrapLeveled returns the LeveledHandler view of h, peeling the ensureThreadSafe
+// *writer wrapper if present. Returns (nil, false) when h is not leveled.
+func unwrapLeveled(h io.Writer) (LeveledHandler, bool) {
+	if w, ok := h.(*writer); ok {
+		if lh, ok := w.original.(LeveledHandler); ok {
+			return lh, true
+		}
+		return nil, false
+	}
+	if lh, ok := h.(LeveledHandler); ok {
+		return lh, true
+	}
+	return nil, false
 }

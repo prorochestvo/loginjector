@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:testifylint // expected-actual misreads the typed literal as actual; the constants are under test
 func TestConstantValues(t *testing.T) {
 	t.Parallel()
 
@@ -37,7 +38,6 @@ func TestParse(t *testing.T) {
 			{"critical", levels.Critical},
 		}
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.input, func(t *testing.T) {
 				t.Parallel()
 				require.Equal(t, tc.want, levels.Parse(tc.input))
@@ -107,7 +107,6 @@ func TestName(t *testing.T) {
 			{levels.Critical, "critical"},
 		}
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.want, func(t *testing.T) {
 				t.Parallel()
 				require.Equal(t, tc.want, levels.Name(tc.level))
@@ -143,7 +142,6 @@ func TestRoundTrip(t *testing.T) {
 		levels.Critical,
 	}
 	for _, c := range constants {
-		c := c
 		t.Run(levels.Name(c), func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, c, levels.Parse(levels.Name(c)))

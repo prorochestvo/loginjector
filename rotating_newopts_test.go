@@ -14,6 +14,8 @@ import (
 // the live-file open and the gzip temp create, while the default stays 0640. The subtests
 // pin the process umask to 0 so the requested mode is observed unmasked; umask is
 // process-global, so these subtests are not parallel and restore it on cleanup.
+//
+//nolint:paralleltest // sets the process umask
 func TestWithFileMode(t *testing.T) {
 	// pinUmaskZero sets the process umask to 0 for the duration of a subtest so an exact
 	// mode assertion is deterministic, restoring the previous umask on cleanup.
@@ -70,6 +72,7 @@ func TestWithFileMode(t *testing.T) {
 // cfg.maxAge as the equivalent WithMaxAge span, zero must disable pruning, and it must
 // actually age out an old backup on rotation.
 func TestWithMaxAgeDays(t *testing.T) {
+	t.Parallel()
 	t.Run("resolves to the same maxAge as the equivalent WithMaxAge", func(t *testing.T) {
 		t.Parallel()
 
