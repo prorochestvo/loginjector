@@ -1,11 +1,8 @@
 version: "2"
 
-# Canonical golangci-lint configuration. Copy to .golangci.yml at the repo root.
-#
-# Two blocks need per-project attention and are marked PROJECT below:
-#   - depguard rules (forbidden dependencies and layer boundaries)
-#   - the exclusions paths list
-# Everything else is the shared standard and should not drift between repos.
+# Derived from the stack-go:lint canonical configuration.
+# Project-specific entries are marked PROJECT.
+# The linter version is pinned by GOLANGCI_VERSION in Makefile.
 
 run:
   timeout: 10m
@@ -15,7 +12,7 @@ run:
 linters:
   default: none
   enable:
-    # --- standard baseline ---
+    # --- standard checks ---
     - errcheck
     - govet
     - ineffassign
@@ -143,9 +140,7 @@ linters:
           rules: gorules/rules.go
 
     funcorder:
-      # Standard-library order: the type declaration first, its constructor
-      # after it, methods below. Enforced on new code only — see the baseline
-      # step in the skill; existing files migrate when they are touched.
+      # Type declaration first, its constructor right after it, methods below (R16).
       constructor: true
       struct-method: true
 
@@ -166,7 +161,7 @@ linters:
   exclusions:
     generated: lax
     rules:
-      # Test files: relax the doc and structure rules, keep the correctness ones.
+      # Test files: relax the doc, structure, errcheck and type-assertion rules.
       - path: _test\.go
         linters:
           - godot
@@ -187,13 +182,6 @@ linters:
         linters:
           - gocritic
         text: 'httpNoBody'
-      # The ruleguard rules file is DSL, not production Go.
-      - path: gorules/
-        linters:
-          - godot
-          - godoclint
-          - funcorder
-          - unused
     paths:
       - tmp
       - logs
