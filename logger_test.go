@@ -19,6 +19,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	_ LevelWriter = (*writer)(nil)
+	_ LevelWriter = (*leveledWriter)(nil)
+	_ LevelWriter = (*recordingLevelWriter)(nil)
+	_ LevelWriter = (*panickingLevelWriter)(nil)
+	_ LevelWriter = (*countingLevelWriter)(nil)
+	_ LevelWriter = levelDiscardWriter{}
+)
+
 const (
 	logLevelDebug   LogLevel = 0x00
 	logLevelInfo    LogLevel = 0x01
@@ -28,6 +37,13 @@ const (
 
 //nolint:paralleltest // captureStdout redirects the process-global os.Stdout
 func TestNewLogger(t *testing.T) {
+	t.Run("already guarded writer is not wrapped again", func(t *testing.T) {
+		inner := &recordingLevelWriter{}
+		guarded := &writer{h: inner.Write, original: inner, shared: &sync.Mutex{}}
+		logger := NewLogger(logLevelDebug, guarded)
+		require.Same(t, guarded, logger.handlers[0])
+	})
+
 	t.Run("default handler writes timestamped lines to stdout", func(t *testing.T) {
 		l := NewLogger(logLevelDebug)
 		require.NotNil(t, l)
@@ -259,6 +275,24 @@ func TestLogger_Hook(t *testing.T) {
 		require.NotContains(t, b.String(), m)
 	})
 
+	t.Run("level writer receives hook level", func(t *testing.T) {
+		t.Parallel()
+		sink := &recordingLevelWriter{}
+		l := NewLogger(logLevelSevere, io.Discard)
+		l.Hook(sink, logLevelWarning)
+
+		n, err := l.WriteLog(logLevelWarning, []byte("hook"))
+
+		require.NoError(t, err)
+		require.Equal(
+			t,
+			0,
+			n,
+			"a hook below the handler threshold does not count as a handler",
+		)
+		require.Equal(t, []LogLevel{logLevelWarning}, sink.levels)
+	})
+
 	t.Run("duplicate levels dedupe", func(t *testing.T) {
 		t.Parallel()
 		b := bytes.NewBufferString("")
@@ -426,6 +460,16 @@ func TestLogger_HookBelowMinimum(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, n, "below-minimum write must report n=0")
 	require.Contains(t, b.String(), m, "hook must fire even below the minimum level")
+
+	t.Run("level writer hook below minimum", func(t *testing.T) {
+		t.Parallel()
+		levelSink := &recordingLevelWriter{}
+		l.Hook(levelSink, logLevelDebug)
+		n, err := l.WriteLog(logLevelDebug, []byte(m))
+		require.NoError(t, err)
+		require.Equal(t, 0, n)
+		require.Equal(t, []LogLevel{logLevelDebug}, levelSink.levels)
+	})
 }
 func TestLogger_StdLog(t *testing.T) {
 	t.Parallel()
@@ -725,6 +769,95 @@ func TestLogger_WriteLog(t *testing.T) {
 			t,
 			m,
 			b.String(),
+		)
+	})
+
+	t.Run("level writers receive levels through every logger adapter", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("registered directly", func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingLevelWriter{}
+			logger := NewLogger(logLevelDebug, sink)
+			_, err := logger.WriteLog(logLevelWarning, []byte("direct"))
+			require.NoError(t, err)
+			require.Equal(t, []LogLevel{logLevelWarning}, sink.levels)
+		})
+
+		t.Run("single minimum wrapper", func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingLevelWriter{}
+			logger := NewLogger(
+				logLevelDebug,
+				WithMinLevel(logLevelInfo, sink),
+			)
+			_, err := logger.WriteLog(logLevelSevere, []byte("wrapped"))
+			require.NoError(t, err)
+			require.Equal(t, []LogLevel{logLevelSevere}, sink.levels)
+		})
+
+		t.Run("nested minimum wrappers", func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingLevelWriter{}
+			handler := WithMinLevel(
+				logLevelDebug,
+				WithMinLevel(logLevelInfo, sink),
+			)
+			logger := NewLogger(logLevelDebug, handler)
+			_, err := logger.WriteLog(logLevelSevere, []byte("wrapped"))
+			require.NoError(t, err)
+			require.Equal(t, []LogLevel{logLevelSevere}, sink.levels)
+		})
+
+		t.Run("Printf", func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingLevelWriter{}
+			NewLogger(logLevelDebug, sink).Printf(logLevelWarning, "%s", "formatted")
+			require.Equal(t, []LogLevel{logLevelWarning}, sink.levels)
+		})
+
+		t.Run("WriterAs", func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingLevelWriter{}
+			_, err := NewLogger(logLevelDebug, sink).WriterAs(logLevelSevere).Write([]byte("writer"))
+			require.NoError(t, err)
+			require.Equal(t, []LogLevel{logLevelSevere}, sink.levels)
+		})
+
+		t.Run("StdLog", func(t *testing.T) {
+			t.Parallel()
+			sink := &recordingLevelWriter{}
+			NewLogger(logLevelDebug, sink).StdLog(logLevelInfo, "").Print("standard")
+			require.Equal(t, []LogLevel{logLevelInfo}, sink.levels)
+		})
+	})
+
+	t.Run("level writer panic is recovered through nested minimum wrappers", func(t *testing.T) {
+		t.Parallel()
+		sink := &panickingLevelWriter{}
+		logger := NewLogger(
+			logLevelDebug,
+			WithMinLevel(
+				logLevelInfo,
+				WithMinLevel(logLevelWarning, sink),
+			),
+		)
+		_, err := logger.WriteLog(logLevelSevere, []byte("panic"))
+		require.Error(t, err)
+		require.Contains(
+			t,
+			err.Error(),
+			"panicked",
+		)
+		require.Contains(
+			t,
+			err.Error(),
+			"*loginjector.panickingLevelWriter",
+		)
+		require.NotContains(
+			t,
+			err.Error(),
+			"*loginjector.leveledWriter",
 		)
 	})
 
@@ -1253,6 +1386,24 @@ func TestLogger_SinkPanicNotice(t *testing.T) {
 		})
 		require.Equal(t, "loginjector: sink *loginjector.panicWithValueWriter panicked: first second\n", out)
 	})
+
+	t.Run("level writer panic through nested minimum wrappers names inner sink", func(t *testing.T) {
+		logger := NewLogger(
+			logLevelDebug,
+			WithMinLevel(
+				logLevelInfo,
+				WithMinLevel(
+					logLevelWarning,
+					&panickingLevelWriter{},
+				),
+			),
+		)
+		out := captureStderr(t, func() {
+			_, err := logger.WriteLog(logLevelSevere, []byte("message"))
+			require.Error(t, err)
+		})
+		require.Equal(t, "loginjector: sink *loginjector.panickingLevelWriter panicked: level panic\n", out)
+	})
 }
 
 func TestWithMinLevel_Logger(t *testing.T) {
@@ -1386,6 +1537,14 @@ func BenchmarkWriteLog(b *testing.B) {
 
 	b.Run("1 sink (single handler)", func(b *testing.B) {
 		l := NewLogger(logLevelInfo, io.Discard)
+		b.ResetTimer()
+		for range b.N {
+			_, _ = l.WriteLog(logLevelInfo, msg)
+		}
+	})
+
+	b.Run("1 sink (LevelWriter)", func(b *testing.B) {
+		l := NewLogger(logLevelInfo, levelDiscardWriter{})
 		b.ResetTimer()
 		for range b.N {
 			_, _ = l.WriteLog(logLevelInfo, msg)
@@ -1609,3 +1768,42 @@ var _ io.Writer = writerFunc(nil)
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+type recordingLevelWriter struct {
+	levels []LogLevel
+	buf    bytes.Buffer
+}
+
+func (w *recordingLevelWriter) Write(p []byte) (int, error) { return w.buf.Write(p) }
+
+func (w *recordingLevelWriter) WriteLevel(level LogLevel, p []byte) (int, error) {
+	w.levels = append(w.levels, level)
+	return w.buf.Write(p)
+}
+
+type panickingLevelWriter struct{}
+
+func (*panickingLevelWriter) Write([]byte) (int, error) { return 0, nil }
+
+func (*panickingLevelWriter) WriteLevel(LogLevel, []byte) (int, error) { panic("level panic") }
+
+type countingLevelWriter struct {
+	counts     map[LogLevel]int
+	writeCalls int
+}
+
+func (w *countingLevelWriter) Write(p []byte) (int, error) {
+	w.writeCalls++
+	return len(p), nil
+}
+
+func (w *countingLevelWriter) WriteLevel(level LogLevel, p []byte) (int, error) {
+	w.counts[level]++
+	return len(p), nil
+}
+
+type levelDiscardWriter struct{}
+
+func (levelDiscardWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func (levelDiscardWriter) WriteLevel(_ LogLevel, p []byte) (int, error) { return len(p), nil }

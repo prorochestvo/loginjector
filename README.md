@@ -67,6 +67,78 @@ s.log.Printf("request sent (model=%s)", model) // "sqlite request sent (model=gp
 The full API — handlers, error and closer helpers, `httptap` middleware, and every
 option — is on [pkg.go.dev](https://pkg.go.dev/github.com/prorochestvo/loginjector).
 
+## Axiom
+
+The opt-in `axiom` package sends log events asynchronously to an Axiom dataset. Create an
+`axiom.Token` containing an API token with ingest permission (`xaat-` token; personal
+`xapt-` tokens are rejected) and an `axiom.Dataset`, then pass the handler to a `Logger`.
+The domain option takes a bare host name; its default
+is `us-east-1.aws.edge.axiom.co`.
+
+```go
+import (
+	"log"
+	"os"
+
+	"github.com/prorochestvo/loginjector"
+	"github.com/prorochestvo/loginjector/axiom"
+	"github.com/prorochestvo/loginjector/levels"
+)
+
+func main() {
+	ax, err := axiom.NewHandler(
+		axiom.Token(os.Getenv("AXIOM_TOKEN")),
+		"app-logs",
+		axiom.WithDomain("eu-central-1.aws.edge.axiom.co"),
+		axiom.WithFields(map[string]any{"service": "beacon", "env": "prod"}),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Close flushes the queue; keep the handler open for the life of the program.
+	defer ax.Close()
+
+	logger := loginjector.NewLogger(
+		levels.Info,
+		loginjector.TimestampedPrintHandler(),
+		ax,
+	)
+	std := logger.StdLog(levels.Info, "")
+	std.Printf("started")
+}
+```
+
+Events are newline-delimited JSON. Each has `_time` in UTC and `message`; messages have
+trailing CR/LF removed and are truncated at 512 KiB after invalid bytes are replaced with U+FFFD. Events
+written through `WriteLevel` also include `level` and `level_num`. `WithFields` adds static
+fields to every event; its keys cannot be empty, start with `_`, or replace reserved event
+fields.
+
+The handler batches up to 1000 events or 4 MiB of uncompressed NDJSON, flushes every second,
+and retries transient failures up to three times. `Stats()` reports Sent, Dropped, and Failed
+event counts.
+
+| Setting | Default | Constraint |
+|---|---:|---|
+| Domain | `us-east-1.aws.edge.axiom.co` | Bare host; set with `WithDomain` |
+| Batch size | 1000 events | 1–10000 |
+| Maximum uncompressed batch | 4 MiB | At least 1 MiB |
+| Flush interval | 1 second | Positive duration |
+| Queue | 10000 events / 32 MiB | Between 1 and 1048576 events; byte limit must cover a batch |
+| Level name | `levels.Name` | Customizable with `WithLevelName` |
+| HTTP client timeout | 10 seconds | Replaced with `WithHTTPClient` |
+| Retries | 3 after initial attempt | Non-negative |
+| Compression | gzip enabled | Configurable with `WithCompression` |
+
+Delivery is best-effort. Events can be dropped when the queue is full or after `Close`, or
+fail after retries are exhausted, on a 4xx response, or at the shutdown deadline. A retry
+after a network error can duplicate a batch Axiom already accepted. `Stats()` counts each
+outcome. Events not delivered by the `Close`/`Shutdown` deadline count as Failed. `Close`
+uses a five-second deadline. `log.Fatal` and `os.Exit` skip deferred `Close`, so the final
+message and queue are lost; log first, then call `Shutdown` explicitly before exiting. A
+`log.New` front logger configured with date flags adds a timestamp inside the event's
+`message`; use flags `0` or `Logger.StdLog` instead.
+
 ## Notes
 
 - **`Panicf`/`Panic` `panic`, they do not call `os.Exit`** — a deferred `recover` can

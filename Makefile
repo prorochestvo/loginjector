@@ -18,6 +18,7 @@ tidy-check:
 ## vet: vet the packages without cgo
 vet:
 	CGO_ENABLED=0 go vet ./...
+	CGO_ENABLED=0 go vet -tags axiom_integration ./axiom/
 
 ## vet-windows: vet the packages for Windows to keep the tree cross-platform
 vet-windows:

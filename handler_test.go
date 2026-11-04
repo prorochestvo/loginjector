@@ -1426,4 +1426,90 @@ func TestWithMinLevel(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "data", buf.String())
 	})
+
+	t.Run("timestamped print output stays unchanged when wrapped", func(t *testing.T) {
+		t.Parallel()
+		var output bytes.Buffer
+		fixed := time.Date(
+			2024,
+			time.March,
+			15,
+			10,
+			30,
+			45,
+			0,
+			time.UTC,
+		)
+		handler := WithMinLevel(
+			3,
+			TimestampedPrintHandler(
+				withClock(func() time.Time { return fixed }),
+				WithOutput(
+					&output,
+				),
+			),
+		)
+		l := NewLogger(0, handler)
+
+		n, err := l.WriteLog(5, []byte("hello\n"))
+
+		require.NoError(t, err)
+		require.Equal(
+			t,
+			len("hello\n"),
+			n,
+		)
+		require.Equal(
+			t,
+			"2024/03/15 10:30:45 hello\n",
+			output.String(),
+		)
+	})
+}
+
+func TestWriter_WriteLevelForRaceCondition(t *testing.T) {
+	t.Parallel()
+	const goroutines = 24
+	const iterations = 250
+	const mixedLevels = 4
+
+	sink := &countingLevelWriter{counts: make(map[LogLevel]int)}
+	logger := NewLogger(logLevelDebug, sink)
+	logger.Hook(
+		sink,
+		0,
+		1,
+		2,
+		3,
+	)
+	wrapped := logger.handlers[0].(*writer)
+
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := range iterations {
+				level := LogLevel((g + i) % mixedLevels)
+				_, _ = logger.WriteLog(level, []byte("level"))
+				// Write also shares the same sink registry mutex as WriteLevel.
+				_, _ = wrapped.Write([]byte("plain"))
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	for level := range mixedLevels {
+		// each WriteLog reaches the direct handler and the hook at its exact level.
+		require.Equal(
+			t,
+			goroutines*iterations/mixedLevels*2,
+			sink.counts[LogLevel(level)],
+		)
+	}
+	require.Equal(
+		t,
+		goroutines*iterations,
+		sink.writeCalls,
+	)
 }
